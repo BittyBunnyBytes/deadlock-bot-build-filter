@@ -102,14 +102,15 @@ PopupBuildTagPicker.PopupPanel
 	border-radius: 4px;
 	box-shadow: #000000AA 0px 0px 24px 0px;
 }
+/* Our tags in the picker: the same box as the game's CitadelBuildTag there (citadel_ui_build_tag.css,
+   shown with its label). */
 .BbfPickTag
 {
 	flow-children: right;
-	padding: 4px 12px 4px 4px;
 	margin: 4px;
-	border-radius: 2px;
-	background-color: #1B201A;
-	border: 1px solid #FFFFFF14;
+	margin-right: 20px;
+	padding: 2px;
+	background-color: #10130D;
 }
 .BbfPickTag:hover
 {
@@ -117,8 +118,7 @@ PopupBuildTagPicker.PopupPanel
 }
 .BbfPickTag.BbfOn
 {
-	background-color: #69E79933;
-	border: 1px solid #69E799;
+	background-color: #69E7994D;
 }
 .BbfPickTag Image
 {
@@ -128,14 +128,12 @@ PopupBuildTagPicker.PopupPanel
 .BbfPickTag Label
 {
 	vertical-align: center;
-	margin-left: 8px;
-	font-size: 16px;
+	margin-left: 10px;
+	padding-right: 10px;
 	font-weight: bold;
-	color: #FFEFD7;
-}
-.BbfPickHint
-{
-	margin: 0px 8px;
 	font-size: 14px;
-	color: #FFEFD788;
+	max-width: 100px;
+	max-height: 64px;
+	text-overflow: shrink;
+	color: #FFEFD7AA;
 }

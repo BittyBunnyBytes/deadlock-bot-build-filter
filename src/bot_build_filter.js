@@ -37,8 +37,9 @@
     var ITEM_NAMES = []; /*@ITEM_NAMES@*/
     // { hero class: hero id }, filled in by tools/build.py from the game's scripts/heroes.vdata.
     var HERO_IDS = {}; /*@HERO_IDS@*/
-    // { ability/item key: icon path }, filled in by tools/build.py from scripts/abilities.vdata (tag icons).
-    var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/
+    // [[ability/item key, icon path], ...], filled in by tools/build.py from scripts/abilities.vdata (tag
+    // icons: an item's shop icon, as the game's tag picker shows it). Likelier tags come first.
+    var ABILITY_IMAGES = []; /*@ABILITY_IMAGES@*/
     var STANDARD_TAGS = ["weapon", "vitality", "spirit", "damage", "utility", "healing", "crowd_control", "mobility",
                          "melee", "headshots", "debuff", "complexity_1", "complexity_2", "complexity_3"];
 
@@ -1003,7 +1004,7 @@
             tagIcons = {};
             var probe = $.CreatePanel("Panel", popup, "");
             probe.style.visibility = "collapse";
-            Object.keys(ABILITY_IMAGES).forEach(function (k) { var n = loc("#" + k, probe); if (n && n.charAt(0) !== "#" && !tagIcons[n]) tagIcons[n] = ABILITY_IMAGES[k]; });
+            ABILITY_IMAGES.forEach(function (e) { var n = loc("#" + e[0], probe); if (n && n.charAt(0) !== "#" && !tagIcons[n]) tagIcons[n] = e[1]; });
             STANDARD_TAGS.forEach(function (k) { var n = loc("#citadel_build_tag_" + k, probe); if (n && n.charAt(0) !== "#") tagIcons[n] = "s2r://panorama/images/builds/citadel_build_tag_" + k + ".vsvg"; });
             try { probe.DeleteAsync(0); } catch (e) {}
         }

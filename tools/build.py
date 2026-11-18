@@ -60,8 +60,10 @@ def hero_ids(game):
 
 
 def ability_images(game):
-    """{ability/item key: s2r icon path} for build-tag icons, from scripts/abilities.vdata; only icons
-    that exist in the game's files are kept."""
+    """[[ability/item key, s2r icon path], ...] for build-tag icons, from scripts/abilities.vdata.
+    Items use their shop icon (what the game's tag picker shows), else their ability image; only icons
+    that exist in the game's files are kept. Ordered so that when two entries share a display name the
+    script keeps the likelier tag: items, then hero abilities, then helpers."""
     import kv3
     p = os.path.join(game, "pak01_dir.vpk")
     idx = vpkread.index(p)
@@ -69,17 +71,25 @@ def ability_images(game):
         root = kv3.plain(kv3.decode(dict(blocks(vpkread.read(p, "scripts/abilities.vdata_c", idx)))[b"DATA"])[0])
     except Exception as e:  # noqa: BLE001
         print("ability images unavailable:", e)
-        return {}
-    out = {}
-    for key, v in root.items():
-        src = v.get("m_strAbilityImage") if isinstance(v, dict) else None
-        if not isinstance(src, str) or not src.startswith("file://{images}/") or key.endswith("_base"):
-            continue
+        return []
+
+    def compiled(src):
+        if not isinstance(src, str) or not src.startswith("file://{images}/"):
+            return None
         rel, ext = os.path.splitext(src[len("file://{images}/"):])
-        compiled = rel + (".vsvg" if ext == ".svg" else "_%s.vtex" % ext[1:])
-        if "panorama/images/" + compiled + "_c" in idx[0]:
-            out[key] = "s2r://panorama/images/" + compiled
-    return out
+        c = rel + (".vsvg" if ext == ".svg" else "_%s.vtex" % ext[1:])
+        return "s2r://panorama/images/" + c if "panorama/images/" + c + "_c" in idx[0] else None
+
+    rank = {"EAbilityType_Item": 0, "EAbilityType_Signature": 1, "EAbilityType_Ultimate": 1, "EAbilityType_Weapon": 2, "EAbilityType_Melee": 2}
+    out = []
+    for key, v in root.items():
+        if not isinstance(v, dict) or key.endswith("_base"):
+            continue
+        icon = compiled(v.get("m_strShopIconLarge")) or compiled(v.get("m_strAbilityImage"))
+        if icon:
+            out.append((rank.get(v.get("m_eAbilityType"), 3), key, icon))
+    out.sort()
+    return [[k, i] for _, k, i in out]
 
 
 def inject(xml, snippets):
@@ -208,10 +218,10 @@ def main():
     js = js.replace(marker, "var HERO_IDS = " + json.dumps(heroes, sort_keys=True) + ";")
     print("hero ids:", len(heroes))
     images = ability_images(game)
-    marker = "var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/"
+    marker = "var ABILITY_IMAGES = []; /*@ABILITY_IMAGES@*/"
     if marker not in js:
         sys.exit("ABILITY_IMAGES marker missing in bot_build_filter.js")
-    js = js.replace(marker, "var ABILITY_IMAGES = " + json.dumps(images, sort_keys=True, separators=(",", ":")) + ";")
+    js = js.replace(marker, "var ABILITY_IMAGES = " + json.dumps(images, separators=(",", ":")) + ";")
     print("tag icons:", len(images))
     red_picker = dict(blocks(stock(game, PICKER_PATH)))[b"RED2"]
     red_svg = dict(blocks(stock(game, "panorama/images/builds/citadel_build_tag_spirit.vsvg_c")))[b"RED2"]

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 const SRC = fs.readFileSync(new URL("../src/bot_build_filter.js", import.meta.url), "utf8")
     .replace("var HERO_IDS = {}; /*@HERO_IDS@*/", 'var HERO_IDS = {"hero_inferno": 1, "hero_haze": 13};')
-    .replace("var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/", 'var ABILITY_IMAGES = {"upgrade_toxic_bullets": "s2r://panorama/images/upgrades/mods_weapon/toxic_bullets_psd.vtex"};');
+    .replace("var ABILITY_IMAGES = []; /*@ABILITY_IMAGES@*/", 'var ABILITY_IMAGES = [["upgrade_toxic_bullets", "s2r://panorama/images/items/weapon/toxic_bullets_psd.vtex"], ["haze_toxic_bullets_dup", "s2r://panorama/images/hud/abilities/wrong_psd.vtex"]];');
 let failures = 0;
 async function test(name, fn) {
     try { await fn(); console.log("ok   " + name); } catch (e) { failures++; console.log("FAIL " + name + "\n     " + (e.stack || e.message).split("\n").slice(0, 8).join("\n     ")); }
@@ -194,7 +194,7 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
         Schedule: (s, f) => timers.push({ at: clock + Math.max(s, FRAME), f }),
         Localize: (fmt, panel) => {
             const tokens = { "#hero_haze": "Haze", "#hero_inferno": "Infernus", "#Citadel_HeroBuilds_DefaultHeroBuild": "Default {s:hero_name} Build", "#Citadel_HeroBuilds_BeginnerHeroBuild": "Beginner {s:hero_name} Build",
-                "#upgrade_toxic_bullets": "Toxic Bullets", "#citadel_build_tag_spirit": "Spirit", "#citadel_build_tag_weapon": "Weapon" };
+                "#upgrade_toxic_bullets": "Toxic Bullets", "#haze_toxic_bullets_dup": "Toxic Bullets", "#citadel_build_tag_spirit": "Spirit", "#citadel_build_tag_weapon": "Weapon" };
             if (fmt.charAt(0) === "#") fmt = tokens[fmt] || fmt;
             return fmt.replace(/\{[sdi]:([a-z_]+)\}/g, (m, n) => { const v = lookup(panel, n); return v === undefined ? m : String(v); });
         },
@@ -600,7 +600,7 @@ await test("tags: our rows show the build's tags (standard, item, unknown -> nam
     const t = [1, 2, 3].map((i) => row.FindChildTraverse("BuildTag" + i));
     assert.deepEqual(t.map((x) => x.FindChildTraverse("TagLabel").text), ["Spirit", "Toxic Bullets", "Something New"]);
     assert.equal(t[0].FindChildTraverse("TagImage").src, "s2r://panorama/images/builds/citadel_build_tag_spirit.vsvg");
-    assert.equal(t[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/upgrades/mods_weapon/toxic_bullets_psd.vtex");
+    assert.equal(t[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/items/weapon/toxic_bullets_psd.vtex", "the item's shop icon wins a shared name");
     assert.equal(t[2].FindChildTraverse("TagImage").style.visibility, "collapse", "unknown tag: no icon...");
     assert.equal(t[2].FindChildTraverse("TagLabel").style.visibility, "visible", "...its name instead");
     const row5 = br.ownRow("Spirit Haze (fun)");
