@@ -19,14 +19,6 @@
 								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
 								<Label id="TagLabel" text="" />
 							</Panel>
-							<Panel class="BbfTagChip" id="BuildTag4">
-								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
-								<Label id="TagLabel" text="" />
-							</Panel>
-							<Panel class="BbfTagChip" id="BuildTag5">
-								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
-								<Label id="TagLabel" text="" />
-							</Panel>
 						</Panel>
 						<Panel class="PopularityContainer">
 							<Panel id="DailyFavorite" class="PopularityTag" onmouseover="UIShowTextTooltip( #Citadel_HeroBuilds_DailyFavorite_Tooltip )" onmouseout="UIHideTextTooltip()">

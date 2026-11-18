@@ -76,7 +76,7 @@ To use your own copy of the page, set `CONFIG.stats.relayUrl`. To turn records o
   description or item-category notes, a "buy order", or three or more numbered item notes.
 
 Picking one filters the list. The tab bar shows `Tags: L>R ×`; click it to clear the filter. Matching
-rows also carry these tags as chips. The game network can't search by them, so they filter the builds
+rows also carry these tags as chips, in whatever is left of the three tag slots after the build's own tags. The game network can't search by them, so they filter the builds
 the mod has already checked. The picker also gets a solid background.
 
 Typing your own search shows the game's results for it, with bot builds hidden in place.

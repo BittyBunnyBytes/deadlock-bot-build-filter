@@ -1043,7 +1043,8 @@
     // Our rows' tag chips are plain panels (BbfTagChip): an icon when the name is known, else the name.
     function drawTags(refs, tags, own) {
         var list = tags.slice(0, 3).map(function (n) { return { name: n, icon: tagIcon(n), tip: n, own: false }; });
-        if (own) ["annotated", "ordered"].forEach(function (k) { if (own[k]) list.push({ name: OWN_TAGS[k].name, icon: OWN_TAGS[k].icon, tip: OWN_TAGS[k].tip, own: true }); });
+        // Three chips at most, like the game: the build's own tags first, ours in the slots left over.
+        if (own) ["annotated", "ordered"].forEach(function (k) { if (own[k] && list.length < 3) list.push({ name: OWN_TAGS[k].name, icon: OWN_TAGS[k].icon, tip: OWN_TAGS[k].tip, own: true }); });
         var sig = list.map(function (t) { return t.name; }).join("|");
         if (refs.tagSig === sig) return;
         refs.tagSig = sig;
@@ -1206,7 +1207,7 @@
         var r = $.CreatePanel("Panel", ownList, "");
         r.BLoadLayoutSnippet("BbfRow");
         var refs = { tags: [], tagSig: null, info: byClass(r, "InfoContainer") || r, star: child(r, "FavoriteIcon"), nameArea: child(r, "BuildNameArea"), desc: null, cls: "" };
-        for (var i = 1; i <= 5; i++) {
+        for (var i = 1; i <= 3; i++) {
             var chip = child(r, "BuildTag" + i);
             if (chip) refs.tags.push({ panel: chip, img: child(chip, "TagImage"), label: child(chip, "TagLabel") });
         }

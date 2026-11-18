@@ -93,7 +93,7 @@ class P {
             const area = new P("Panel", this, "BuildNameArea");
             const nameRow = new P("Panel", area, ""); nameRow.AddClass("nameRow");
             const tags = new P("Panel", nameRow, ""); tags.AddClass("BuildTagContainer");
-            for (let i = 1; i <= 5; i++) {
+            for (let i = 1; i <= 3; i++) {
                 const t = new P("Panel", tags, "BuildTag" + i); t.AddClass("BbfTagChip");
                 const img = new P("Image", t, "TagImage"); img.SetImage = (src) => { img.src = src; };
                 new P("Label", t, "TagLabel");
@@ -622,7 +622,7 @@ await test("styleTags: annotated and L>R detection", () => {
 });
 await test("tag filter: picking L>R / Annotated filters the list; our tags show on rows; the × clears it", async () => {
     reset();
-    const db = copy(SAMPLES).map((b) => (b.author === "4" ? { ...b, desc: b.desc + " Follow left -> right." } : b));
+    const db = copy(SAMPLES).map((b) => (b.author === "4" ? { ...b, desc: b.desc + " Follow left -> right." } : b.author === "7" ? { ...b, desc: b.desc + " L>R", tags: ["Weapon", "Spirit"] } : b));
     db.push({ key: "8|Plain build", author: "8", name: "Plain build", desc: "nothing special", annotations: [] });
     const br = makeBrowser({ db, defaultList: db });
     br.start();
@@ -630,12 +630,16 @@ await test("tag filter: picking L>R / Annotated filters the list; our tags show 
     assert.ok(br.shown().includes("Plain build"));
     // our tags on rows
     const row = br.ownRow("Haze bullet spam");
-    const chips = [1, 2, 3, 4, 5].map((i) => row.FindChildTraverse("BuildTag" + i)).filter((c) => c.style.visibility === "visible");
+    const chips = [1, 2, 3].map((i) => row.FindChildTraverse("BuildTag" + i)).filter((c) => c.style.visibility === "visible");
     assert.deepEqual(chips.map((c) => c.FindChildTraverse("TagLabel").text), ["Annotated", "L>R"]);
     assert.equal(chips[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/bot_build_filter/tag_ordered.vsvg");
+    // three chips at most: a build with two tags of its own gets only one of ours
+    const row7 = br.ownRow("Tank Haze");
+    const vis7 = [1, 2, 3].map((i) => row7.FindChildTraverse("BuildTag" + i)).filter((c) => c.style.visibility === "visible");
+    assert.deepEqual(vis7.map((c) => c.FindChildTraverse("TagLabel").text), ["Weapon", "Spirit", "Annotated"]);
     br.manager.SetAttributeString("bbf3_tag_filter", "ordered");
     await advance(1);
-    assert.deepEqual(br.shown(), ["Haze bullet spam"]);
+    assert.deepEqual(br.shown(), ["Haze bullet spam", "Tank Haze"]);
     assert.match(labels(br).join(" "), /Tags: L>R  ×/);
     br.manager.SetAttributeString("bbf3_tag_filter", "annotated");
     await advance(1);
