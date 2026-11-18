@@ -80,11 +80,12 @@
             // The lookup page (relay/stats.html of this repo, served by GitHub Pages). "" = try a data: URL
             // instead (the game's web view does not run those, so records then stay off).
             relayUrl: "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html",
-            batch: 100,           // authors per request
+            batch: 30,            // authors per records request (the API's per-player query is heavy)
             favsLimit: 400,       // favourites: the hero's this many most favourited builds (one request)
             buildsBatch: 40,      // authors per build-text request
             minSpacingSeconds: 2, // between requests (the API allows 100 a second; this stays far below)
-            timeoutSeconds: 15,
+            timeoutSeconds: 30,
+            topLimit: 150,        // builds fetched when a sort asks for a new search
             reuseSeconds: 1800    // records are kept this long within a game session
         }
     };
@@ -698,7 +699,8 @@
         toggleLabel.text = "Bot filter: " + (state.on ? "ON" : "OFF") + count;
         toggleLabel.style.color = state.on ? "#9be7a9" : "#FFEFD7";
         var pending = pendingCount();
-        statusLabel.text = busy ? "⟳ " + (progress || "Working") + (rateNote ? " · " + rateNote : "") + "  ·  pause"
+        statusLabel.text = topState.busy || topState.wanted ? "⟳ Searching: " + sortName(S.sort).toLowerCase() + "…"
+            : busy ? "⟳ " + (progress || "Working") + (rateNote ? " · " + rateNote : "") + "  ·  pause"
             : paused ? "Paused  ·  resume"
             : pending ? "Check " + pending + " in detail" : "";
         statusLabel.style.color = busy ? "#e8c66a" : paused ? "#ff9f6a" : "#c8b28a";
@@ -753,12 +755,27 @@
         R.refillSeconds = S.pace === "gentle" ? 8 : 4;
         version++;
     }
+    // A sort that is not the game's order asks deadlock-api for this hero's builds in that order (once per
+    // order and list); the author sorts get the most favourited builds as a wider pool to rank.
+    var TOP_SORT = { favs: "favorites", trending: "weekly_favorites", updated: "updated_at", played: "favorites", wins: "favorites", winrate: "favorites" };
+    var topState = { wanted: null, busy: false, done: {} };
+    function sortSearch() {
+        var by = TOP_SORT[S.sort];
+        if (!by || !canFill) return;
+        if (pool && pool.topDone && pool.topDone[by]) { scrollToTop(); return; }
+        if (pool) { pool.topDone = pool.topDone || {}; pool.topDone[by] = true; }
+        topState.wanted = by;
+        scrollToTop();
+    }
+    function scrollToTop() { try { if (ownList) ownList.ScrollToTop(); } catch (e) {} }
     function changeSetting(k, v) {
+        var sortChanged = k === "sort" && S.sort !== v;
         S[k] = v;
         keep("bbf3_settings", S);
         settingsState.saveWanted = true;
         if (k === "hideBots") { setOn(v); }
         applySettings();
+        if (sortChanged) sortSearch();
         drawSettings();
         render();
     }
@@ -989,10 +1006,12 @@
         'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}' +
         'if(P.cmd==="load"){var v="";try{v=localStorage.getItem("bbf_settings")||""}catch(e){}send(P.r,v);return}' +
         'if(P.cmd==="save"){try{localStorage.setItem("bbf_settings",JSON.stringify(P.settings))}catch(e){}send(P.r,"saved");return}' +
-        'if(P.cmd==="builds"){var out=[],q=P.authors.slice(),busy=0;function one(){if(!q.length){if(!busy)send(P.r,JSON.stringify(out));return}var a=q.shift();busy++;' +
-        'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){for(var i=0;i<l.length;i++){var h=l[i].hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];' +
+        'function tuple(b){var h=b.hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];' +
         'for(var j=0;j<c.length;j++){cats.push((c[j].name||"")+" "+(c[j].description||""));var m=c[j].mods||[];for(var k=0;k<m.length;k++)if(m[k].annotation)notes.push(String(m[k].annotation).slice(0,80))}' +
-        'out.push([String(h.author_account_id),String(h.name||""),h.hero_build_id|0,l[i].num_favorites|0,l[i].num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400),h.last_updated_timestamp|0])}})' +
+        'return[String(h.author_account_id),String(h.name||""),h.hero_build_id|0,b.num_favorites|0,b.num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400),h.last_updated_timestamp|0]}' +
+        'if(P.cmd==="top"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by="+P.sort+"&sort_direction=desc&limit="+(P.limit|0||150)).then(function(l){send(P.r,JSON.stringify(l.map(tuple)))}).catch(function(e){fail(P.r,e)});return}' +
+        'if(P.cmd==="builds"){var out=[],q=P.authors.slice(),busy=0;function one(){if(!q.length){if(!busy)send(P.r,JSON.stringify(out));return}var a=q.shift();busy++;' +
+        'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){for(var i=0;i<l.length;i++)out.push(tuple(l[i]))})' +
         '.catch(function(){out.push(["!",String(a)])}).then(function(){busy--;one()})}for(var w=0;w<6;w++)one();return}' +
         'if(P.cmd==="favs"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400)).then(function(a){' +
         'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}' +
@@ -1012,6 +1031,28 @@
     var apiAsked = {};           // authors whose builds for this hero were asked of deadlock-api.com (this session)
     var apiFails = {};           // failed asks per author
     function normName(n) { return String(n || "").replace(/\s+/g, " ").trim().toLowerCase(); }
+    // The game's spelling of a build's name wins (trailing spaces or case can differ).
+    function keyForApi(author, name) {
+        var want = author + "|" + normName(name), hit = null;
+        (pool ? pool.entries : []).concat(rows()).some(function (e) { if (e.author + "|" + normName(e.name) === want) { hit = e.key; return true; } return false; });
+        return hit || keyOf(author, name);
+    }
+    // A build tuple from the lookup page: [author, name, id, favourites, weekly, description, notes, category text, updated].
+    function storeApiBuild(b) {
+        // The API's copy is the build's own text; it replaces anything read from the details pane.
+        known[keyForApi(b[0], b[1])] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], updated: b[8] || 0, src: "api" };
+    }
+    // Builds in our list from authors the API answered for, but which it did not return: logged (a few per
+    // session) with the API's names for that author, to tell a missing build from a name that differs.
+    var unmatchedReported = 0;
+    function reportUnmatched(authors, apiNames) {
+        if (unmatchedReported >= 3 || !pool) return;
+        pool.entries.forEach(function (e) {
+            if (unmatchedReported >= 3 || authors.indexOf(e.author) < 0 || (known[e.key] && known[e.key].src === "api")) return;
+            unmatchedReported++;
+            log("not on deadlock-api: \"" + e.name + "\" by " + e.author + "; it has " + JSON.stringify((apiNames[e.author] || []).slice(0, 5)));
+        });
+    }
     function heroFromDefaultName(name) {
         if (!name) return null;
         var probe = $.CreatePanel("Panel", popup, ""), hit = null;
@@ -1052,7 +1093,7 @@
         stats.view = $.CreatePanel("CitadelHTMLPanel", holder, "");
         stats.view.style.width = "100%"; stats.view.style.height = "100%";
         $.RegisterEventHandler("HTMLTitle", stats.view, function (panel, title) { try { onStatsTitle(String(title)); } catch (e) { statsFailed("answer could not be read"); } });
-        $.RegisterEventHandler("HTMLURLChanged", stats.view, function (panel, url) { if (String(url).indexOf("http://error/") === 0) statsFailed("the web view could not open the page"); });
+        $.RegisterEventHandler("HTMLURLChanged", stats.view, function (panel, url) { if (String(url).indexOf("http://error/") === 0) statsFailed("the web view could not open the page", true); });
         return stats.view;
     }
     function statsUrl(cmd) {
@@ -1067,7 +1108,7 @@
         stats.state = "waiting";
         stats.sentAt = now();
         try { statsView().SetURL(statsUrl(cmd)); }
-        catch (e) { statsFailed("the game's web view is not available"); }
+        catch (e) { statsFailed("the game's web view is not available", true); }
     }
     function onStatsTitle(title) {
         if (title.indexOf("BBF1|") !== 0 || stats.state !== "waiting") return;
@@ -1087,7 +1128,16 @@
     function finish(body) {
         var cmd = stats.cur;
         var recs = body ? body.split(",") : [];
-        if (cmd.cmd === "load") {
+        if (cmd.cmd === "top") {
+            var tuples = JSON.parse(body || "[]"), addedTop = 0;
+            tuples.forEach(function (b) { storeApiBuild(b); apiAsked[b[0]] = apiAsked[b[0]] || false; });
+            if (pool) addedTop = addApiEntries(tuples);
+            log("sorted search (" + cmd.sort + "): " + tuples.length + " builds from deadlock-api, " + addedTop + " new to the list");
+            topState.busy = false;
+            sharedCache = null;
+            saveKnown(); savePool();
+            scrollToTop();
+        } else if (cmd.cmd === "load") {
             settingsState.loaded = true;
             try {
                 if (body) { S = cleanSettings(JSON.parse(body)); keep("bbf3_settings", S); applySettings(); if (state.on !== S.hideBots) setOn(S.hideBots); drawSettings(); log("settings loaded"); }
@@ -1095,16 +1145,14 @@
         } else if (cmd.cmd === "save") {
             // nothing to do
         } else if (cmd.cmd === "builds") {
-            var got = 0, failed = {}, byNorm = {};
-            // The game's spelling of a build's name wins (trailing spaces or case can differ).
-            (pool ? pool.entries : []).concat(rows()).forEach(function (e) { byNorm[e.author + "|" + normName(e.name)] = e.key; });
+            var got = 0, failed = {}, apiNames = {};
             JSON.parse(body || "[]").forEach(function (b) {
                 if (b[0] === "!") { failed[b[1]] = true; return; }
-                var key = byNorm[b[0] + "|" + normName(b[1])] || keyOf(b[0], b[1]);
-                // The API's copy is the build's own text; it replaces anything read from the details pane.
-                known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], updated: b[8] || 0, src: "api" };
+                storeApiBuild(b);
+                (apiNames[b[0]] = apiNames[b[0]] || []).push(b[1]);
                 got++;
             });
+            reportUnmatched(cmd.authors, apiNames);
             // An author the API failed on is asked again once, then left (no endless retries).
             cmd.authors.forEach(function (a) {
                 if (!failed[a]) { apiAsked[a] = true; return; }
@@ -1136,15 +1184,18 @@
         stats.nextAt = now() + SC.minSpacingSeconds;
         version++;
     }
-    function statsFailed(why) {
+    // A page that cannot load at all will not start working: three of those switch the lookups off for
+    // this browser. A slow or failed answer only means waiting longer before the next request.
+    function statsFailed(why, fatal) {
         if (stats.cur && stats.cur.cmd === "favs") favs.tried++;
+        if (stats.cur && stats.cur.cmd === "top") topState.busy = false;
         stats.fails++;
         stats.note = why;
         stats.cur = null; stats.parts = null;
-        log("author records: " + why);
-        // A few failures in a row: give up for this browser (the cause will not go away by itself).
-        stats.state = stats.fails >= 3 ? "failed" : "ready";
-        stats.nextAt = now() + SC.minSpacingSeconds * Math.pow(4, stats.fails);
+        log("lookup (" + why + ")" + (fatal ? "" : ", trying again later"));
+        if (fatal) stats.fatal = (stats.fatal || 0) + 1;
+        stats.state = (stats.fatal || 0) >= 3 ? "failed" : "ready";
+        stats.nextAt = now() + Math.min(120, SC.minSpacingSeconds * Math.pow(3, Math.min(stats.fails, 5)));
     }
     // Favourites first (one request per hero), then records for the authors on screen we lack.
     var statsAuthorsVersion = -1, statsWant = [];
@@ -1152,11 +1203,12 @@
         if (stats.state === "off") startStats();
         // A batch of authors' builds takes longer (several API calls); chunks arriving reset the clock.
         var limit = stats.cur && stats.cur.cmd === "builds" ? SC.timeoutSeconds + stats.cur.authors.length : SC.timeoutSeconds;
-        if (stats.state === "waiting" && now() - stats.sentAt > limit) statsFailed("no answer from deadlock-api.com");
+        if (stats.state === "waiting" && now() - stats.sentAt > limit) statsFailed("no answer from deadlock-api.com in " + Math.round(limit) + "s");
         if (stats.state !== "ready" || now() < stats.nextAt) return;
         // Saved settings first (once), a pending save, then build texts, then authors' records.
         if (!settingsState.tried) { settingsState.tried = true; send({ cmd: "load" }); return; }
         if (settingsState.saveWanted) { settingsState.saveWanted = false; send({ cmd: "save", settings: S }); return; }
+        if (topState.wanted) { var t = topState.wanted; topState.wanted = null; topState.busy = true; send({ cmd: "top", hero: stats.heroId, sort: t, limit: SC.topLimit }); return; }
         var need = buildsWanted();
         if (need.length) { send({ cmd: "builds", hero: stats.heroId, authors: need.slice(0, SC.buildsBatch) }); return; }
         if (statsAuthorsVersion !== version) {
@@ -1367,6 +1419,21 @@
         if (front) pool.entries = added.concat(pool.entries); else pool.entries = pool.entries.concat(added);
         version++;
         return added.length;
+    }
+    // Builds found through deadlock-api (a sorted search): entries like the stock ones, without a stock row
+    // yet (picking one loads it by id). Returns how many were new.
+    function addApiEntries(tuples) {
+        var have = {}, n = 0;
+        pool.entries.forEach(function (e) { have[e.author + "|" + normName(e.name)] = true; });
+        tuples.forEach(function (b) {
+            var nk = b[0] + "|" + normName(b[1]);
+            if (have[nk] || !b[0] || b[0] === "0") return;
+            have[nk] = true;
+            pool.entries.push({ key: keyOf(b[0], b[1]), author: b[0], name: b[1], id: b[2], desc: plain(b[5]), classes: [], tags: [], api: true });
+            n++;
+        });
+        version++;
+        return n;
     }
     // What the list shows: pool entries that are not (or no longer) bot builds, Valve's default builds last.
     var shownCache = null, shownVersion = -1, hiddenBySettingsCount = 0;
