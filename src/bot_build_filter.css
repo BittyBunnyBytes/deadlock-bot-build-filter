@@ -62,3 +62,80 @@ CitadelHeroBuildsSelector .BbfList .HeroBuildListItem.BbfUnchecked
 {
 	visibility: visible;
 }
+/* Tag chips of our rows, in the look of the game's small build tags. */
+.BbfTagChip
+{
+	flow-children: right;
+	padding: 4px;
+	border-radius: 2px;
+	margin: 0px 2px;
+	background-color: #10130D;
+	vertical-align: center;
+	visibility: collapse;
+}
+.BbfTagChip #TagImage
+{
+	width: 26px;
+	height: 26px;
+}
+.BbfTagChip #TagLabel
+{
+	vertical-align: center;
+	margin: 0px 6px;
+	font-size: 14px;
+	font-weight: bold;
+	color: #FFEFD7AA;
+	max-width: 110px;
+	text-overflow: shrink;
+	visibility: collapse;
+}
+.BbfTagChip.BbfOwnTag
+{
+	background-color: #1D2A22;
+}
+
+/* The tag picker: a solid panel, and our group of tags. */
+PopupBuildTagPicker.PopupPanel
+{
+	background-color: #10130DF5;
+	border: 1px solid #FFFFFF1A;
+	border-radius: 4px;
+	box-shadow: #000000AA 0px 0px 24px 0px;
+}
+.BbfPickTag
+{
+	flow-children: right;
+	padding: 4px 12px 4px 4px;
+	margin: 4px;
+	border-radius: 2px;
+	background-color: #1B201A;
+	border: 1px solid #FFFFFF14;
+}
+.BbfPickTag:hover
+{
+	brightness: 1.4;
+}
+.BbfPickTag.BbfOn
+{
+	background-color: #69E79933;
+	border: 1px solid #69E799;
+}
+.BbfPickTag Image
+{
+	width: 30px;
+	height: 30px;
+}
+.BbfPickTag Label
+{
+	vertical-align: center;
+	margin-left: 8px;
+	font-size: 16px;
+	font-weight: bold;
+	color: #FFEFD7;
+}
+.BbfPickHint
+{
+	margin: 0px 8px;
+	font-size: 14px;
+	color: #FFEFD788;
+}

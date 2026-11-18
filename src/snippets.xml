@@ -1,14 +1,32 @@
 		<!-- Bot Build Filter: the game's HeroBuildListItem row (from citadel_ui_build_selector), minus its
-		     hard-wired Use action, which the script sets per row. -->
+		     hard-wired Use action (the script sets it per row) and with plain tag chips. -->
 		<snippet name="BbfRow">
 			<Panel class="HeroBuildListItem">
 				<ProgressBarWithMiddle id="BuildPreviewProgressBar" />
 				<Panel id="BuildNameArea">
 					<Panel class="nameRow">
+						<!-- Plain chips the script fills: the build's own tags (copied from the game's row), then ours. -->
 						<Panel class="BuildTagContainer">
-							<CitadelBuildTag class="BuildTag Small" id="BuildTag1" />
-							<CitadelBuildTag class="BuildTag Small" id="BuildTag2" />
-							<CitadelBuildTag class="BuildTag Small" id="BuildTag3" />
+							<Panel class="BbfTagChip" id="BuildTag1">
+								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
+								<Label id="TagLabel" text="" />
+							</Panel>
+							<Panel class="BbfTagChip" id="BuildTag2">
+								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
+								<Label id="TagLabel" text="" />
+							</Panel>
+							<Panel class="BbfTagChip" id="BuildTag3">
+								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
+								<Label id="TagLabel" text="" />
+							</Panel>
+							<Panel class="BbfTagChip" id="BuildTag4">
+								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
+								<Label id="TagLabel" text="" />
+							</Panel>
+							<Panel class="BbfTagChip" id="BuildTag5">
+								<Image id="TagImage" scaling="stretch-to-fit-preserve-aspect" />
+								<Label id="TagLabel" text="" />
+							</Panel>
 						</Panel>
 						<Panel class="PopularityContainer">
 							<Panel id="DailyFavorite" class="PopularityTag" onmouseover="UIShowTextTooltip( #Citadel_HeroBuilds_DailyFavorite_Tooltip )" onmouseout="UIHideTextTooltip()">

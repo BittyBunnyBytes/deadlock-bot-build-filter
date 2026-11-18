@@ -22,6 +22,9 @@ import vpkread  # noqa: E402
 SCRIPT_PATH = "panorama/scripts/bot_build_filter/bot_build_filter.vjs_c"
 STYLE_PATH = "panorama/styles/bot_build_filter/bot_build_filter.vcss_c"
 LAYOUT_PATH = "panorama/layout/popups/citadel_popup_build_browser.vxml_c"
+PICKER_PATH = "panorama/layout/popups/citadel_popup_build_tag_picker.vxml_c"
+PICKER_SCRIPT_PATH = "panorama/scripts/bot_build_filter/bot_build_filter_picker.vjs_c"
+ICON_DIR = "panorama/images/bot_build_filter/"
 INCLUDE = '<include src="s2r://%s" />' % SCRIPT_PATH
 STYLE_INCLUDES = ['<include src="s2r://panorama/styles/citadel_ui_build_selector.vcss" />',
                   '<include src="s2r://%s" />' % STYLE_PATH]
@@ -137,6 +140,11 @@ def layout_resource(xml, red2):
     return resource(3, red2, struct.pack("<IH", zlib.crc32(xml) & 0xFFFFFFFF, 0) + xml)
 
 
+def svg_resource(svg, red2):
+    svg = svg.encode("utf-8") if isinstance(svg, str) else svg
+    return resource(2, red2, struct.pack("<IH", zlib.crc32(svg) & 0xFFFFFFFF, 0) + svg)
+
+
 def script_resource(js, red2):
     return resource(4, red2, js.encode("utf-8"))
 
@@ -205,7 +213,14 @@ def main():
         sys.exit("ABILITY_IMAGES marker missing in bot_build_filter.js")
     js = js.replace(marker, "var ABILITY_IMAGES = " + json.dumps(images, sort_keys=True, separators=(",", ":")) + ";")
     print("tag icons:", len(images))
-    common = {SCRIPT_PATH: script_resource(js, red_script), STYLE_PATH: layout_resource(src("bot_build_filter.css"), red_style)}
+    red_picker = dict(blocks(stock(game, PICKER_PATH)))[b"RED2"]
+    red_svg = dict(blocks(stock(game, "panorama/images/builds/citadel_build_tag_spirit.vsvg_c")))[b"RED2"]
+    common = {SCRIPT_PATH: script_resource(js, red_script), STYLE_PATH: layout_resource(src("bot_build_filter.css"), red_style),
+              PICKER_PATH: layout_resource(src("citadel_popup_build_tag_picker.xml"), red_picker),
+              PICKER_SCRIPT_PATH: script_resource(src("bot_build_filter_picker.js"), red_script)}
+    for icon in sorted(os.listdir(os.path.join(ROOT, "src", "icons"))):
+        if icon.endswith(".svg"):
+            common[ICON_DIR + icon[:-4] + ".vsvg_c"] = svg_resource(src(os.path.join("icons", icon)), red_svg)
     snippets = src("snippets.xml")
     os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)
 

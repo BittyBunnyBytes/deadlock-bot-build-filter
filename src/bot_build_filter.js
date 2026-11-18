@@ -77,6 +77,7 @@
             // instead (the game's web view does not run those, so records then stay off).
             relayUrl: "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html",
             batch: 100,           // authors per request
+            favsLimit: 400,       // favourites: the hero's this many most favourited builds (one request)
             minSpacingSeconds: 2, // between requests (the API allows 100 a second; this stays far below)
             timeoutSeconds: 15,
             reuseSeconds: 1800    // records are kept this long within a game session
@@ -213,8 +214,19 @@
         return res;
     }
 
+    // ------------------------------------------------------------------ the mod's own tags: "Annotated", "L>R"
+    // L>R: the build says in which order to buy (in its name, description, category notes or item notes).
+    var RE_ORDER = /\bL\s*(?:-+>|=+>|>+|→|to)\s*R\b|\bleft\s*(?:-+>|=+>|>|→|to)\s*right\b|\b(?:buy|build|item|purchase|upgrade)(?:ing)?\s+order\b|\bin (?:this |that |the )?order\b|\bfollow (?:the |this |my )?(?:build |order |items? )?(?:from )?(?:left|in order|order)\b|\btop\s*(?:-+>|>|→|to)\s*bottom\b/i;
+    var RE_NUMBERED_NOTE = /^\s*(?:#\s*\d{1,2}|\d{1,2}\s*(?:st|nd|rd|th)\b|\d{1,2}\s*[.):-](?!\d)|\(\d{1,2}\))/i;
+    function styleTags(b) {
+        var notes = b.annotations || [];
+        var numbered = notes.filter(function (a) { return RE_NUMBERED_NOTE.test(a); }).length;
+        var text = (b.name || "") + "\n" + (b.desc || "") + "\n" + (b.cats || "") + "\n" + notes.join("\n");
+        return { annotated: notes.length > 0, ordered: RE_ORDER.test(text) || numbered >= 3 };
+    }
+
     // Exposed for the offline tests (tools/test_filter.mjs); harmless in game.
-    var api = { scoreText: scoreText, scoreList: scoreList, websites: websites, templateOf: templateOf, CONFIG: CONFIG };
+    var api = { scoreText: scoreText, scoreList: scoreList, websites: websites, templateOf: templateOf, styleTags: styleTags, CONFIG: CONFIG };
     try { if (typeof globalThis !== "undefined") globalThis.BotBuildFilter = api; } catch (e) {}
     if (typeof $ === "undefined" || !$.GetContextPanel) return;
 
@@ -302,6 +314,7 @@
     var alive = true, busy = false, stopWork = false, paused = false, progress = "";
     var userSearch = false;      // the player typed in the search box: their results, filtered in place
     var userLoading = false;     // a build the player picked is being loaded
+    var currentFilter = [];      // the mod's tags picked in the tag picker
     var stockIsDefault = true;   // the stock list holds the normal (unsearched) public list
     var heroKey = "";            // name of Valve's default build row: tells heroes apart for the pool cache
     var pool = null;             // { at, entries: [entry], term: next search word index, exhausted }
@@ -317,9 +330,19 @@
     // The row classes worth carrying over to our copy of a row.
     var ROW_CLASSES = ["DefaultBuild", "Favorite", "DailyFavorite", "WeeklyFavorite", "ObsoleteBuild", "ActiveBuild", "ShowFavoriteCount", "MyBuild"];
     function rowClasses(panel) { return ROW_CLASSES.filter(function (c) { return panel.BHasClass(c); }); }
+    // The stock rows, re-read at most every 100 ms (several parts of a tick ask for them).
+    var rowsMemo = null;
     function rows() {
-        var out = [], n = 0;
-        try { n = list.GetChildCount(); } catch (e) {}
+        var n = 0, first = null;
+        try { n = list.GetChildCount(); first = n ? list.GetChild(0) : null; } catch (e) {}
+        if (rowsMemo && rowsMemo.n === n && rowsMemo.first === first && Date.now() - rowsMemo.at < 100) return rowsMemo.val;
+        var val = readRowsNow(n);
+        rowsMemo = { n: n, first: first, at: Date.now(), val: val };
+        return val;
+    }
+    function forgetRows() { rowsMemo = null; }
+    function readRowsNow(n) {
+        var out = [];
         for (var i = 0; i < n; i++) {
             var row = list.GetChild(i);
             if (!valid(row) || !row.BHasClass("HeroBuildListItem")) continue;
@@ -354,6 +377,25 @@
     function readDetails() {
         return { id: detailsId(), name: detailsName(), desc: plain(loc("{s:selected_hero_build_description}", details)), annotations: annotationsOf(notesRoot()) };
     }
+    // The text of the build's item categories (their names and notes, e.g. "Follow this left -> right"),
+    // read once a preview has settled. Item names are left out.
+    function categoriesOf(root) {
+        var out = [], seen = {}, stack = [root], visited = 0;
+        while (stack.length && visited < 3000) {
+            var p = stack.pop();
+            visited++;
+            if (!valid(p)) continue;
+            if (p.paneltype === "Label") {
+                var t = plain(p.text);
+                if (t && t.length >= 4 && t.length < 300 && !seen[t] && !tagIcon(t)) { seen[t] = true; out.push(t); }
+                continue;
+            }
+            var n = 0;
+            try { n = p.GetChildCount(); } catch (e) {}
+            for (var i = 0; i < n; i++) stack.push(p.GetChild(i));
+        }
+        return out.join("\n").slice(0, 1500);
+    }
     // Read the details pane once it has settled: the same reading on settleFrames frames in a row (the
     // item list fills in a moment after the name). Notes identical to the previous build's are likely
     // still the old item panels, so those get a few more frames to prove themselves.
@@ -362,6 +404,7 @@
         var last = null, same = 0;
         for (var f = 0; f < 30; f++) {
             await nextFrame();
+            if (detailsName() !== name) { last = null; same = 0; continue; }   // cheap check first
             var d = readDetails();
             if (d.name !== name) { last = null; same = 0; continue; }
             var sig = d.id + "\n" + d.desc + "\n" + d.annotations.join("\n");
@@ -374,7 +417,8 @@
         return null;
     }
     function remember(r, d) {
-        known[r.key] = { author: r.author, desc: d.desc, annotations: d.annotations, id: d.id };
+        if (d.cats === undefined) d.cats = categoriesOf(notesRoot());
+        known[r.key] = { author: r.author, desc: d.desc, annotations: d.annotations, id: d.id, cats: d.cats };
         sharedCache = null;
         version++;
     }
@@ -431,6 +475,26 @@
             if (v && v.bot && v.own >= CONFIG.threshold && b.author && b.author !== "0" && !botAuthors[b.author]) { botAuthors[b.author] = b.name; changed = true; }
         });
         if (changed) { keep("bbf2_bot_authors", botAuthors); version++; }
+    }
+    function ownTagsOf(key, author, name) {
+        var k = known[key];
+        if (!k || k.annotations === null || author === "0") return null;
+        var shared = sharedNotes();
+        return styleTags({ name: name, desc: k.desc, cats: k.cats, annotations: (k.annotations || []).filter(function (a) { return !shared[a]; }) });
+    }
+    // The tag filter picked in the tag picker (kept on the root panel, which the picker popup shares).
+    var rootPanel = null;
+    function tagFilter() {
+        try {
+            if (!rootPanel) { rootPanel = popup; while (valid(rootPanel.GetParent())) rootPanel = rootPanel.GetParent(); }
+            var v = rootPanel.GetAttributeString("bbf3_tag_filter", "");
+            return v ? v.split(",") : [];
+        } catch (e) { return []; }
+    }
+    function passesFilter(filter, key, author, name) {
+        if (!filter.length) return true;
+        var t = ownTagsOf(key, author, name);
+        return !!t && filter.every(function (f) { return t[f]; });
     }
     function verdicts(items) {
         var input = items.map(function (r) { return inputOf(r.key, r.author, r.name); });
@@ -549,6 +613,7 @@
         var done = await waitFor(function () { return !loading(); }, CONFIG.searchTimeoutSeconds);
         await nextFrame();
         clearOurText();
+        forgetRows();
         var got = done ? rows() : [];
         if (!isId) backoff(done && got.length > 0);
         return done ? got : null;
@@ -578,6 +643,10 @@
     control.style.backgroundColor = "#00000066";
     var toggleLabel = label(control, "", 16);
     toggleLabel.style.verticalAlign = "center";
+    var filterLabel = label(control, "", 16, "#9fd8ff");
+    filterLabel.style.marginLeft = "10px";
+    filterLabel.style.verticalAlign = "center";
+    filterLabel.SetPanelEvent("onactivate", function () { try { tagFilter(); rootPanel.SetAttributeString("bbf3_tag_filter", ""); } catch (e) {} });
     var statusLabel = label(control, "", 16, "#c8b28a");
     statusLabel.style.marginLeft = "10px";
     statusLabel.style.verticalAlign = "center";
@@ -599,6 +668,8 @@
             : paused ? "Paused" + (pending ? " · " + pending + " unchecked" : "") + "  ·  resume"
             : pending ? "Check " + pending + " unchecked" : "";
         statusLabel.style.color = busy ? "#e8c66a" : paused ? "#ff9f6a" : "#c8b28a";
+        filterLabel.text = currentFilter.length ? "Tags: " + currentFilter.map(function (f) { return f === "ordered" ? "L>R" : "Annotated"; }).join(" + ") + "  ×" : "";
+        filterLabel.style.visibility = currentFilter.length && publicMode() ? "visible" : "collapse";
         statusLabel.style.visibility = publicMode() && statusLabel.text ? "visible" : "collapse";
         if (stats.state === "failed" && !stats.toldUser) { stats.toldUser = true; tooltip(toggleLabel, "Author records (W/L) are unavailable: " + stats.note + "."); }
     }
@@ -615,7 +686,7 @@
         // Hidden with the game's own class for that: it only hides a row in the Public tab and leaves the
         // My Builds rules (own, favourited, active builds) alone. Only a class we added is ever removed.
         var protectedRow = p.BHasClass("ActiveBuild") || p.BHasClass("Favorite");
-        var hide = flagged && state.on && !protectedRow;
+        var hide = (flagged || !passesFilter(currentFilter, row.key, row.author, row.name)) && state.on && !protectedRow;
         if (hide) { if (!p.BHasClass("HidePublic")) { p.AddClass("HidePublic"); p.SetAttributeString("bbf_hid", "1"); } }
         else if (p.GetAttributeString("bbf_hid", "") === "1") { p.RemoveClass("HidePublic"); p.SetAttributeString("bbf_hid", ""); }
         if (flagged && !hide) {
@@ -630,9 +701,14 @@
             tooltip(tag, "Looks like an automated win-rate build (score " + verdict.score + "):<br>• " + verdict.reasons.join("<br>• "));
         } else if (tag) tag.style.visibility = "collapse";
     }
+    var applySig = "";
     function apply() {
         var rowList = rows();
         learnFromDetails(rowList);
+        // Nothing to redo when the same rows are showing and nothing that decides a verdict changed.
+        var sig = version + "|" + state.on + "|" + publicMode() + "|" + rowList.map(function (r) { return r.key + (r.panel.BHasClass("ActiveBuild") ? "*" : "") + (r.panel.BHasClass("Favorite") ? "+" : ""); }).join("\n");
+        if (sig === applySig) return rowList;
+        applySig = sig;
         lastResult = verdicts(rowList);
         hiddenCount = 0; flaggedCount = 0;
         rowList.forEach(function (r) {
@@ -643,7 +719,7 @@
                 if (state.on && publicMode() && !r.panel.BHasClass("ActiveBuild") && !r.panel.BHasClass("Favorite")) hiddenCount++;
             }
             markRow(r, v);
-            if (r.author !== "0") statsLabels(r.panel, r.author, favCount(r.panel), byClass(r.panel, "nameRow") || r.panel, null);
+            if (r.author !== "0") statsLabels({}, r.panel, r.author, r.name, byClass(r.panel, "nameRow") || r.panel, null);
         });
         return rowList;
     }
@@ -668,21 +744,38 @@
         }
     }
 
-    // ------------------------------------------------------------------ author records (deadlock-api.com)
-    // The game only shares hero records with friends, so these come from deadlock-api.com's public
-    // match data. Panorama scripts cannot reach the network, but the game's web view can: a tiny page
-    // (built in as a data: URL, or your own copy of relay/stats.html) asks the API for many authors at
-    // once and hands the answer back through its title, "BBF1|<request>|ok|<account:wins:matches,...>".
+    // ------------------------------------------------------------------ author records + favourites (deadlock-api.com)
+    // The game only shares hero records with friends and never shows favourite counts, so both come
+    // from deadlock-api.com. Panorama scripts cannot reach the network, but the game's web view can:
+    // a tiny page (relay/stats.html, served by GitHub Pages) asks the API and hands the answer back
+    // through its title, in chunks: "BBF1|<request>|<i>/<n>|<chunk>" (or "|ok|" for a one-part
+    // answer from older copies of the page, or "|err|<why>").
+    //   stats: { cmd: "stats", ids, hero } -> "account:wins:matches,..."
+    //   favs:  { cmd: "favs", hero, limit } -> "min:<least favourites listed>,author:namehash:favs:weekly,..."
+    //          for the hero's most favourited builds (namehash: fnv1a of the build name, 8 hex digits).
     var STATS_PAGE = '<!doctype html><meta charset="utf-8"><title>BBF</title><script>(function(){' +
-        'function t(s){document.title=s}' +
+        'var API="https://api.deadlock-api.com/v1/";' +
+        'function fnv(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return("0000000"+h.toString(16)).slice(-8)}' +
+        'function send(r,s){var n=Math.max(1,Math.ceil(s.length/3500)),i=0;if(n===1){document.title="BBF1|"+r+"|ok|"+s;return}' +
+        '(function next(){if(i>=n)return;document.title="BBF1|"+r+"|"+i+"/"+n+"|"+s.slice(i*3500,(i+1)*3500);i++;setTimeout(next,15)})()}' +
+        'function fail(r,e){document.title="BBF1|"+r+"|err|"+((e&&e.message)||e)}' +
+        'function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}' +
         'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}' +
-        'var u="https://api.deadlock-api.com/v1/players/hero-stats?account_ids="+P.ids.join(",")+"&hero_ids="+P.hero;' +
-        'fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}).then(function(a){var o=[];' +
+        'if(P.cmd==="favs"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400)).then(function(a){' +
+        'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}' +
+        'send(P.r,"min:"+min+","+o.join(","))}).catch(function(e){fail(P.r,e)});return}' +
+        'get(API+"players/hero-stats?account_ids="+P.ids.join(",")+"&hero_ids="+P.hero).then(function(a){var o=[];' +
         'for(var i=0;i<a.length;i++){var x=a[i];if(x.hero_id==P.hero)o.push(x.account_id+":"+(x.wins|0)+":"+(x.matches_played|0))}' +
-        't("BBF1|"+P.r+"|ok|"+o.join(","))}).catch(function(e){t("BBF1|"+P.r+"|err|"+((e&&e.message)||e))})}' +
+        'send(P.r,o.join(","))}).catch(function(e){fail(P.r,e)})}' +
         'window.addEventListener("hashchange",run);run()})()<\/script>';
+    function fnv(s) {
+        var h = 0x811c9dc5;
+        for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+        return ("0000000" + h.toString(16)).slice(-8);
+    }
     var SC = CONFIG.stats;
-    var stats = { heroId: 0, heroName: "", data: {}, state: "off", note: "", req: 0, ids: null, sentAt: 0, nextAt: 0, fails: 0, view: null };
+    var stats = { heroId: 0, heroName: "", data: {}, state: "off", note: "", req: 0, cur: null, parts: null, sentAt: 0, nextAt: 0, fails: 0, view: null };
+    var favs = { data: null, min: -1, tried: 0 };   // "author|namehash" -> [favourites, weekly]
     function heroFromDefaultName(name) {
         if (!name) return null;
         var probe = $.CreatePanel("Panel", popup, ""), hit = null;
@@ -700,7 +793,8 @@
         try { probe.DeleteAsync(0); } catch (e) {}
         return hit;
     }
-    function statsKey() { return "bbf2_stats_" + stats.heroId; }
+    function statsKey() { return "bbf3_stats_" + stats.heroId; }
+    function favsKey() { return "bbf3_favs_" + stats.heroId; }
     function startStats() {
         if (!CONFIG.authorStats || stats.state !== "off" || !heroKey) return;
         var hero = heroFromDefaultName(heroKey);
@@ -708,7 +802,10 @@
         stats.heroId = hero.id; stats.heroName = hero.name;
         var kept = recall(statsKey(), null);
         if (kept && now() - kept.at < SC.reuseSeconds) stats.data = kept.data || {};
+        var keptFavs = recall(favsKey(), null);
+        if (keptFavs && now() - keptFavs.at < SC.reuseSeconds) { favs.data = keptFavs.data; favs.min = keptFavs.min; }
         stats.state = "ready";
+        version++;
     }
     function statsView() {
         if (valid(stats.view)) return stats.view;
@@ -725,46 +822,79 @@
         var hash = "#" + encodeURIComponent(JSON.stringify(cmd));
         return (SC.relayUrl ? SC.relayUrl.split("#")[0] : "data:text/html;charset=utf-8," + encodeURIComponent(STATS_PAGE)) + hash;
     }
-    function requestStats(ids) {
+    function send(cmd) {
         stats.req++;
-        stats.ids = ids;
+        cmd.r = stats.req;
+        stats.cur = cmd;
+        stats.parts = null;
         stats.state = "waiting";
         stats.sentAt = now();
-        try { statsView().SetURL(statsUrl({ r: stats.req, ids: ids, hero: stats.heroId })); }
+        try { statsView().SetURL(statsUrl(cmd)); }
         catch (e) { statsFailed("the game's web view is not available"); }
     }
     function onStatsTitle(title) {
         if (title.indexOf("BBF1|") !== 0 || stats.state !== "waiting") return;
-        var parts = title.split("|");
-        if (Number(parts[1]) !== stats.req) return;
-        if (parts[2] !== "ok") { statsFailed(parts.slice(3).join("|") || "request failed"); return; }
-        stats.ids.forEach(function (id) { stats.data[id] = { w: 0, m: 0 }; });   // asked about and not listed: no recorded games
-        (parts[3] || "").split(",").forEach(function (rec) {
-            var f = rec.split(":");
-            if (f.length === 3) stats.data[f[0]] = { w: Number(f[1]) || 0, m: Number(f[2]) || 0 };
-        });
-        stats.state = "ready"; stats.fails = 0; stats.ids = null; stats.note = "";
+        var a = title.indexOf("|", 5), b = a < 0 ? -1 : title.indexOf("|", a + 1);
+        if (b < 0 || Number(title.slice(5, a)) !== stats.req) return;
+        var kind = title.slice(a + 1, b), body = title.slice(b + 1);
+        if (kind === "err") { statsFailed(body || "request failed"); return; }
+        if (kind === "ok") { finish(body); return; }
+        var slash = kind.indexOf("/"), i = Number(kind.slice(0, slash)), n = Number(kind.slice(slash + 1));
+        if (!(n > 0) || !(i >= 0 && i < n)) return;
+        if (!stats.parts || stats.parts.length !== n) stats.parts = new Array(n);
+        stats.parts[i] = body;
+        stats.sentAt = now();
+        for (var k = 0; k < n; k++) if (stats.parts[k] === undefined) return;
+        finish(stats.parts.join(""));
+    }
+    function finish(body) {
+        var cmd = stats.cur;
+        var recs = body ? body.split(",") : [];
+        if (cmd.cmd === "favs") {
+            favs.data = {};
+            recs.forEach(function (rec) {
+                var f = rec.split(":");
+                if (f[0] === "min") favs.min = Number(f[1]);
+                else if (f.length === 4) favs.data[f[0] + "|" + f[1]] = [Number(f[2]) || 0, Number(f[3]) || 0];
+            });
+            keep(favsKey(), { at: now(), data: favs.data, min: favs.min });
+            log("favourites: " + Object.keys(favs.data).length + " most favourited builds");
+        } else {
+            cmd.ids.forEach(function (id) { stats.data[id] = { w: 0, m: 0 }; });   // asked about and not listed: no recorded games
+            recs.forEach(function (rec) {
+                var f = rec.split(":");
+                if (f.length === 3) stats.data[f[0]] = { w: Number(f[1]) || 0, m: Number(f[2]) || 0 };
+            });
+            keep(statsKey(), { at: now(), data: stats.data });
+        }
+        stats.state = "ready"; stats.fails = 0; stats.cur = null; stats.parts = null; stats.note = "";
         stats.nextAt = now() + SC.minSpacingSeconds;
-        keep(statsKey(), { at: now(), data: stats.data });
         version++;
     }
     function statsFailed(why) {
+        if (stats.cur && stats.cur.cmd === "favs") favs.tried++;
         stats.fails++;
         stats.note = why;
-        stats.ids = null;
+        stats.cur = null; stats.parts = null;
         log("author records: " + why);
         // A few failures in a row: give up for this browser (the cause will not go away by itself).
         stats.state = stats.fails >= 3 ? "failed" : "ready";
         stats.nextAt = now() + SC.minSpacingSeconds * Math.pow(4, stats.fails);
     }
-    // Ask about the authors of what is on screen that we have no record for yet.
-    function statsTick(authors) {
+    // Favourites first (one request per hero), then records for the authors on screen we lack.
+    var statsAuthorsVersion = -1, statsWant = [];
+    function statsTick(authorsOf) {
         if (stats.state === "off") startStats();
         if (stats.state === "waiting" && now() - stats.sentAt > SC.timeoutSeconds) statsFailed("no answer from deadlock-api.com");
         if (stats.state !== "ready" || now() < stats.nextAt) return;
-        var want = [], seen = {};
-        authors.forEach(function (a) { if (a && a !== "0" && !stats.data[a] && !seen[a]) { seen[a] = true; want.push(a); } });
-        if (want.length) requestStats(want.slice(0, SC.batch));
+        if (!favs.data && favs.tried < 2) { send({ cmd: "favs", hero: stats.heroId, limit: SC.favsLimit }); return; }
+        if (statsAuthorsVersion !== version) {
+            statsAuthorsVersion = version;
+            var seen = {};
+            statsWant = [];
+            authorsOf().forEach(function (a) { if (a && a !== "0" && !stats.data[a] && !seen[a]) { seen[a] = true; statsWant.push(a); } });
+        }
+        if (statsWant.length) { send({ cmd: "stats", ids: statsWant.slice(0, SC.batch), hero: stats.heroId }); statsWant = statsWant.slice(SC.batch); }
     }
     function compact(n) {
         if (!(n >= 0)) return "";
@@ -772,35 +902,50 @@
         if (n < 100000) return (Math.floor(n / 100) / 10) + "k";
         return Math.floor(n / 1000) + "k";
     }
-    // The record and favourite labels of a row (ours or the game's).
-    function statsLabels(row, author, fav, anchor, before) {
-        var box = byClass(row, "BbfStats");
-        if (!box) {
-            box = $.CreatePanel("Panel", anchor, "");
-            box.AddClass("BbfStats"); box.AddClass("BbfControl");
-            box.style.flowChildren = "right";
-            box.style.verticalAlign = "center";
-            box.style.marginRight = "8px";
-            box.style.marginLeft = "8px";
-            if (before && before.GetParent() === anchor) { try { anchor.MoveChildBefore(box, before); } catch (e) {} }
-            var rec = label(box, "", 15, "#d8cbb4"); rec.AddClass("BbfRecord"); rec.style.verticalAlign = "center";
-            var fv = label(box, "", 15, "#c8b28a"); fv.AddClass("BbfFav"); fv.style.verticalAlign = "center"; fv.style.marginLeft = "10px";
+    // Favourites of a build: the API's count when it is among the most favourited, "fewer than the
+    // least of those" otherwise; null while unknown.
+    function favInfo(author, name) {
+        if (!favs.data || !author || author === "0") return null;
+        var f = favs.data[author + "|" + fnv(name)];
+        if (f) return { n: f[0], w: f[1] };
+        return favs.min > 0 ? { below: favs.min } : null;
+    }
+    // The record and favourite labels of a row (ours or the game's). `refs` caches the label panels.
+    function statsLabels(refs, row, author, name, anchor, before) {
+        if (!refs.box || !valid(refs.box)) {
+            refs.box = byClass(row, "BbfStats");
+            if (!refs.box) {
+                refs.box = $.CreatePanel("Panel", anchor, "");
+                refs.box.AddClass("BbfStats"); refs.box.AddClass("BbfControl");
+                refs.box.style.flowChildren = "right";
+                refs.box.style.verticalAlign = "center";
+                refs.box.style.marginRight = "8px";
+                refs.box.style.marginLeft = "8px";
+                if (before && before.GetParent() === anchor) { try { anchor.MoveChildBefore(refs.box, before); } catch (e) {} }
+                var rec = label(refs.box, "", 15, "#d8cbb4"); rec.AddClass("BbfRecord"); rec.style.verticalAlign = "center";
+                var fv = label(refs.box, "", 15, "#c8b28a"); fv.AddClass("BbfFav"); fv.style.verticalAlign = "center"; fv.style.marginLeft = "10px";
+            }
+            refs.rec = byClass(refs.box, "BbfRecord"); refs.fav = byClass(refs.box, "BbfFav");
         }
-        var recLabel = byClass(box, "BbfRecord"), favLabel = byClass(box, "BbfFav");
-        var d = author && author !== "0" ? stats.data[author] : null, sig = (d ? d.w + "/" + d.m : "-") + "|" + fav + "|" + stats.heroName;
-        if (box.GetAttributeString("bbf_sig", "") === sig) return;
-        box.SetAttributeString("bbf_sig", sig);
+        var d = author && author !== "0" ? stats.data[author] : null, fi = favInfo(author, name);
+        var sig = (d ? d.w + "/" + d.m : "-") + "|" + (fi ? (fi.below ? "<" + fi.below : fi.n + "/" + fi.w) : "-") + "|" + stats.heroName;
+        if (refs.box.GetAttributeString("bbf_sig", "") === sig) return;
+        refs.box.SetAttributeString("bbf_sig", sig);
         if (d) {
             var l = Math.max(0, d.m - d.w), rate = d.m ? d.w / d.m : 0;
-            recLabel.text = d.w + "W " + l + "L";
-            recLabel.style.color = d.m === 0 ? "#ff8a6a" : d.m >= 5 && rate < 0.42 ? "#ffb36a" : d.m >= 10 && rate >= 0.55 ? "#9be7a9" : "#d8cbb4";
-            recLabel.style.visibility = "visible";
-            tooltip(recLabel, "The author's record on " + (stats.heroName || "this hero") + ": " + d.w + " wins, " + l + " losses" +
+            refs.rec.text = d.w + "W " + l + "L";
+            refs.rec.style.color = d.m === 0 ? "#ff8a6a" : d.m >= 5 && rate < 0.42 ? "#ffb36a" : d.m >= 10 && rate >= 0.55 ? "#9be7a9" : "#d8cbb4";
+            refs.rec.style.visibility = "visible";
+            tooltip(refs.rec, "The author's record on " + (stats.heroName || "this hero") + ": " + d.w + " wins, " + l + " losses" +
                 (d.m ? " (" + Math.round(rate * 100) + "% of " + d.m + " matches)" : "") +
                 ".<br>From the public matches deadlock-api.com has recorded; it does not have every match, so 0W 0L means none recorded, not necessarily never played.");
-        } else recLabel.style.visibility = "collapse";
-        if (fav >= 0) { favLabel.text = "★ " + compact(fav); favLabel.style.visibility = "visible"; tooltip(favLabel, fav + " favourites"); }
-        else favLabel.style.visibility = "collapse";
+        } else refs.rec.style.visibility = "collapse";
+        if (fi) {
+            refs.fav.text = fi.below ? "★ <" + compact(fi.below) : "★ " + compact(fi.n);
+            refs.fav.style.visibility = "visible";
+            tooltip(refs.fav, fi.below ? "Fewer than " + fi.below + " favourites (not among this hero's " + Object.keys(favs.data).length + " most favourited builds)."
+                : fi.n + " favourites" + (fi.w ? ", " + fi.w + " this week" : "") + ".<br>From deadlock-api.com.");
+        } else refs.fav.style.visibility = "collapse";
     }
 
     // ------------------------------------------------------------------ our public list
@@ -851,6 +996,8 @@
     // The build's tags (up to three): standard tags, abilities or items. The tag panel only shows a
     // name ({s:tag_name}) and an icon; the icon is found by name from the game's own data.
     var tagIcons = null;
+    var OWN_TAGS = { annotated: { name: "Annotated", icon: "s2r://panorama/images/bot_build_filter/tag_annotated.vsvg", tip: "Annotated: its items carry notes." },
+                     ordered: { name: "L>R", icon: "s2r://panorama/images/bot_build_filter/tag_ordered.vsvg", tip: "L>R: the build says which order to buy in." } };
     function tagIcon(name) {
         if (!tagIcons) {
             tagIcons = {};
@@ -862,46 +1009,59 @@
         }
         return tagIcons[name] || "";
     }
+    var tagDumped = false;
+    function tagName(t) {
+        var name = loc("{s:tag_name}", t);
+        if (!name) {
+            var l = child(t, "TagLabel"), txt = l ? String(l.text || "") : "";
+            if (txt && txt.charAt(0) !== "#" && txt.indexOf("{") < 0) name = txt;
+        }
+        return name;
+    }
+    // Once per session: what a stock tag panel offers a script (to improve tag copying later).
+    function dumpTag(t, name) {
+        if (tagDumped || recall("bbf3_tag_dumped", false)) return;
+        tagDumped = true;
+        keep("bbf3_tag_dumped", true);
+        var img = child(t, "TagImage"), keys = [];
+        try { for (var k in img) keys.push(k); } catch (e) {}
+        var l = child(t, "TagLabel");
+        log("debug tag: name=" + JSON.stringify(name) + " label=" + JSON.stringify(l ? String(l.text) : null) + " empty=" + t.BHasClass("Empty") +
+            " image keys=" + keys.slice(0, 60).join(","));
+    }
     function tagsOf(panel) {
         var out = [];
         for (var i = 1; i <= 3; i++) {
             var t = child(panel, "BuildTag" + i);
             if (!valid(t) || t.BHasClass("Empty")) continue;
-            var name = loc("{s:tag_name}", t);
+            var name = tagName(t);
+            dumpTag(t, name);
             if (name) out.push(name);
         }
         return out;
     }
-    function drawTags(r, tags) {
-        var box = byClass(r, "BuildTagContainer");
-        if (!box) return;
-        var sig = tags.join("|");
-        if (box.GetAttributeString("bbf_tags", "?") === sig) return;
-        box.SetAttributeString("bbf_tags", sig);
-        for (var i = 1; i <= 3; i++) {
-            var t = child(r, "BuildTag" + i), name = tags[i - 1];
-            if (!valid(t)) continue;
-            if (!name) { t.style.visibility = "collapse"; continue; }
-            t.style.visibility = "visible";
-            t.RemoveClass("Empty");
-            t.SetDialogVariable("tag_name", name);
-            var img = child(t, "TagImage"), icon = tagIcon(name);
-            if (!img) {   // the tag panel did not build its own layout: give it an image and a name
-                img = $.CreatePanel("Image", t, "TagImage");
-                img.style.width = "26px"; img.style.height = "26px";
-                var l = label(t, name, 14, "#FFEFD7"); l.style.verticalAlign = "center"; l.style.marginLeft = "4px"; l.style.visibility = "collapse"; l.AddClass("BbfTagName");
-            }
-            if (icon) { try { img.SetImage(icon); } catch (e) { icon = ""; } }
-            t.SetHasClass("ShowLabel", !icon);
-            var nameLabel = byClass(t, "BbfTagName");
-            if (nameLabel) nameLabel.style.visibility = icon ? "collapse" : "visible";
-            tooltip(t, name);
+    // Our rows' tag chips are plain panels (BbfTagChip): an icon when the name is known, else the name.
+    function drawTags(refs, tags, own) {
+        var list = tags.slice(0, 3).map(function (n) { return { name: n, icon: tagIcon(n), tip: n, own: false }; });
+        if (own) ["annotated", "ordered"].forEach(function (k) { if (own[k]) list.push({ name: OWN_TAGS[k].name, icon: OWN_TAGS[k].icon, tip: OWN_TAGS[k].tip, own: true }); });
+        var sig = list.map(function (t) { return t.name; }).join("|");
+        if (refs.tagSig === sig) return;
+        refs.tagSig = sig;
+        for (var i = 0; i < refs.tags.length; i++) {
+            var chip = refs.tags[i], t = list[i];
+            if (!t) { chip.panel.style.visibility = "collapse"; continue; }
+            chip.panel.style.visibility = "visible";
+            chip.panel.SetHasClass("BbfOwnTag", t.own);
+            var icon = t.icon;
+            if (icon && chip.img) { try { chip.img.SetImage(icon); } catch (e) { icon = ""; } }
+            if (chip.img) chip.img.style.visibility = icon ? "visible" : "collapse";
+            if (chip.label) { chip.label.text = t.name; chip.label.style.visibility = icon ? "collapse" : "visible"; }
+            tooltip(chip.panel, t.tip);
         }
     }
-    function favCount(panel) { var f = digits(loc("{i:favorite_count}", panel)); return f === "" ? -1 : Number(f); }
     function entryFor(r) {
         var k = known[r.key] || {};
-        return { key: r.key, author: r.author, name: r.name, id: k.id || 0, desc: k.desc || "", classes: rowClasses(r.panel), fav: favCount(r.panel), tags: tagsOf(r.panel) };
+        return { key: r.key, author: r.author, name: r.name, id: k.id || 0, desc: k.desc || "", classes: rowClasses(r.panel), tags: tagsOf(r.panel) };
     }
     // Add stock rows that are not bot builds; `front` puts new ones before what is already listed
     // (the normal list leads; Valve's default builds always go last when shown).
@@ -910,7 +1070,7 @@
         pool.entries.forEach(function (e) { have[e.key] = e; });
         rowList.forEach(function (r) {
             var e = have[r.key];
-            if (e) { var k = known[r.key]; if (k && k.id) e.id = k.id; if (k) e.desc = k.desc || e.desc; e.classes = rowClasses(r.panel); var f = favCount(r.panel); if (f >= 0) e.fav = f; var tg = tagsOf(r.panel); if (tg.length) e.tags = tg; return; }
+            if (e) { var k = known[r.key]; if (k && k.id) e.id = k.id; if (k) e.desc = k.desc || e.desc; e.classes = rowClasses(r.panel); var tg = tagsOf(r.panel); if (tg.length) e.tags = tg; return; }
             if (result[r.key] && result[r.key].bot) return;
             e = entryFor(r);
             have[r.key] = e;
@@ -926,7 +1086,7 @@
         if (!pool) return [];
         if (shownCache && shownVersion === version) return shownCache;
         var result = verdicts(pool.entries);
-        var out = pool.entries.filter(function (e) { return !result[e.key].bot; });
+        var out = pool.entries.filter(function (e) { return !result[e.key].bot && passesFilter(currentFilter, e.key, e.author, e.name); });
         shownVersion = version;
         return (shownCache = out.filter(function (e) { return e.author !== "0"; }).concat(out.filter(function (e) { return e.author === "0"; })));
     }
@@ -953,6 +1113,9 @@
             await verifyCurrent("Checking");
             addRows(rows(), true);
             savePool();
+            var checked = pool.entries.filter(function (e) { return known[e.key] && known[e.key].annotations !== null; });
+            log("checked " + checked.length + " builds; item notes found on " + checked.filter(function (e) { return known[e.key].annotations.length; }).length +
+                ", L>R on " + checked.filter(function (e) { var t = ownTagsOf(e.key, e.author, e.name); return t && t.ordered; }).length);
         } catch (e) { log("verify: " + e); pause("an error while checking"); }
         finally { busy = false; progress = ""; render(); }
         if (!paused && shownEntries().length < CONFIG.minRows) loadMore("fill");
@@ -1038,10 +1201,16 @@
     }
 
     // ------------------------------------------------------------------ drawing our list
-    var ownRows = {};
+    var ownRows = {}, ownRefs = {};
     function makeRow(e) {
         var r = $.CreatePanel("Panel", ownList, "");
         r.BLoadLayoutSnippet("BbfRow");
+        var refs = { tags: [], tagSig: null, info: byClass(r, "InfoContainer") || r, star: child(r, "FavoriteIcon"), nameArea: child(r, "BuildNameArea"), desc: null, cls: "" };
+        for (var i = 1; i <= 5; i++) {
+            var chip = child(r, "BuildTag" + i);
+            if (chip) refs.tags.push({ panel: chip, img: child(chip, "TagImage"), label: child(chip, "TagLabel") });
+        }
+        ownRefs[e.key] = refs;
         r.AddClass("PublicBuild");
         r.SetDialogVariable("selected_hero_build_name", e.name);
         r.SetDialogVariable("obsolete_tag", "");
@@ -1052,38 +1221,41 @@
         if (useButton) useButton.SetPanelEvent("onactivate", function () { use(e); });
         var star = child(r, "FavoriteIcon");
         if (star) star.SetPanelEvent("onactivate", function () { favourite(e); });
-        var nameArea = child(r, "BuildNameArea");
-        if (nameArea && e.desc) tooltip(nameArea, e.desc.length > 500 ? e.desc.slice(0, 500) + "..." : e.desc);
-        r.SetAttributeString("bbf_desc", e.desc || "");
         return r;
     }
     function syncRow(r, e, live) {
-        if (live) { var f = favCount(live.panel); if (f >= 0) e.fav = f; var tg = tagsOf(live.panel); if (tg.length) e.tags = tg; }
-        drawTags(r, e.tags || []);
-        if (e.author !== "0") {
-            var info = byClass(r, "InfoContainer") || r;
-            statsLabels(r, e.author, typeof e.fav === "number" ? e.fav : -1, info, child(r, "FavoriteIcon"));
+        var refs = ownRefs[e.key];
+        if (live) { var tg = tagsOf(live.panel); if (tg.length) e.tags = tg; }
+        drawTags(refs, e.tags || [], ownTagsOf(e.key, e.author, e.name));
+        if (e.author !== "0") statsLabels(refs, r, e.author, e.name, refs.info, refs.star);
+        var want = live ? rowClasses(live.panel) : e.classes.slice();
+        if (e.key === selectedKey) want.push("Selected");
+        if (e.author !== "0" && (!known[e.key] || known[e.key].annotations === null)) want.push("BbfUnchecked");
+        var cls = want.join(" ");
+        if (refs.cls !== cls) {
+            refs.cls = cls;
+            ROW_CLASSES.concat(["Selected", "BbfUnchecked"]).forEach(function (c) { r.SetHasClass(c, want.indexOf(c) >= 0); });
         }
-        var want = {};
-        (live ? rowClasses(live.panel) : e.classes).forEach(function (c) { want[c] = true; });
-        if (e.key === selectedKey) want.Selected = true;
-        if (e.author !== "0" && (!known[e.key] || known[e.key].annotations === null)) want.BbfUnchecked = true;
-        ROW_CLASSES.concat(["Selected", "BbfUnchecked"]).forEach(function (c) { r.SetHasClass(c, !!want[c]); });
-        if (e.desc && r.GetAttributeString("bbf_desc", "") !== e.desc) {
-            r.SetAttributeString("bbf_desc", e.desc);
-            var nameArea = child(r, "BuildNameArea");
-            if (nameArea) tooltip(nameArea, e.desc.length > 500 ? e.desc.slice(0, 500) + "..." : e.desc);
+        if (e.desc && refs.desc !== e.desc && refs.nameArea) {
+            refs.desc = e.desc;
+            tooltip(refs.nameArea, e.desc.length > 500 ? e.desc.slice(0, 500) + "..." : e.desc);
         }
     }
+    var renderSig = "";
     function render() {
         drawControl();
         if (!ownList) return;
         var on = listOn() && !!pool;
         ownList.SetHasClass("BbfShown", on);
-        if (!on) return;
+        if (!on) { renderSig = ""; return; }
         fitList();
-        var entries = shownEntries(), live = {}, wanted = {};
-        rows().forEach(function (r) { live[r.key] = r; });
+        // Rows are only re-synced when something they show changed.
+        var stock = rows(), live = {};
+        stock.forEach(function (r) { live[r.key] = r; });
+        var sig = version + "|" + selectedKey + "|" + stock.map(function (r) { return r.key + (r.panel.BHasClass("ActiveBuild") ? "*" : "") + (r.panel.BHasClass("Favorite") ? "+" : ""); }).join("\n");
+        if (sig === renderSig) { drawMore(); return; }
+        renderSig = sig;
+        var entries = shownEntries(), wanted = {};
         var prev = null;
         entries.forEach(function (e, i) {
             wanted[e.key] = true;
@@ -1097,7 +1269,7 @@
             }
             prev = r;
         });
-        Object.keys(ownRows).forEach(function (k) { if (!wanted[k]) { try { ownRows[k].DeleteAsync(0); } catch (err) {} delete ownRows[k]; } });
+        Object.keys(ownRows).forEach(function (k) { if (!wanted[k]) { try { ownRows[k].DeleteAsync(0); } catch (err) {} delete ownRows[k]; delete ownRefs[k]; } });
         if (prev) ownList.MoveChildAfter(moreRow, prev);
         drawMore();
     }
@@ -1131,6 +1303,8 @@
                 if (!userSearch && text && text !== ourText) { userSearch = true; stockIsDefault = false; if (busy) pause("the player searched"); render(); }
                 else if (userSearch && !text) { userSearch = false; render(); }
             }
+            var f = tagFilter();
+            if (f.join(",") !== currentFilter.join(",")) { currentFilter = f; version++; }
             // Leaving our list (My Builds, filter off, the player's search): background work stops now.
             if (busy && !listOn() && !userLoading && ownList) stopWork = true;
             if (!busy && !loading() && ticks++ % 2 === 0) {
@@ -1157,8 +1331,7 @@
                 }
             }
             if (CONFIG.authorStats && publicMode()) {
-                var authors = listOn() && pool ? shownEntries().slice(0, 300).map(function (e) { return e.author; }) : rows().map(function (r) { return r.author; });
-                statsTick(authors);
+                statsTick(function () { return listOn() && pool ? shownEntries().slice(0, 300).map(function (e) { return e.author; }) : rows().map(function (r) { return r.author; }); });
             }
             render();
         } catch (e) { log("tick: " + e); }

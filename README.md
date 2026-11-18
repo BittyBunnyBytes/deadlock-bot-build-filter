@@ -46,7 +46,9 @@ The tab-bar control:
   label then offers **resume**.
 
 **Author records and favourites.** Each row shows the author's wins and losses on the hero
-(`30W 22L`) and the build's favourite count (`★ 48.2k`). The record colour means:
+(`30W 22L`) and the build's favourite count (`★ 48.2k`). The game never shows favourite counts, so
+these come from deadlock-api.com too, with one request per hero for its 400 most favourited builds.
+Builds outside those show `★ <N`, meaning fewer than the least of them. The record colour means:
 
 | Colour | Meaning |
 |---|---|
@@ -65,6 +67,17 @@ client sends the API the account IDs of the build authors on screen, plus your I
 If the page or the API can't be reached, records stay blank and everything else keeps working.
 To use your own copy of the page, set `CONFIG.stats.relayUrl`. To turn records off, set
 `CONFIG.authorStats = false`.
+
+**Tags.** The mod's rows show each build's tags like the game's list does, using the game's own icons.
+
+**"Ordered and annotated" tags.** The game's **Search by Tag** picker gets an extra group with two tags of the mod's own:
+- **Annotated**: builds whose items carry notes.
+- **L>R**: builds that say which order to buy in. That covers "L>R" or "left to right" in the name,
+  description or item-category notes, a "buy order", or three or more numbered item notes.
+
+Picking one filters the list. The tab bar shows `Tags: L>R ×`; click it to clear the filter. Matching
+rows also carry these tags as chips. The game network can't search by them, so they filter the builds
+the mod has already checked. The picker also gets a solid background.
 
 Typing your own search shows the game's results for it, with bot builds hidden in place.
 Only item notes set on the item itself count. Values inherited from parent panels, and notes that

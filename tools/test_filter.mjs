@@ -93,8 +93,8 @@ class P {
             const area = new P("Panel", this, "BuildNameArea");
             const nameRow = new P("Panel", area, ""); nameRow.AddClass("nameRow");
             const tags = new P("Panel", nameRow, ""); tags.AddClass("BuildTagContainer");
-            for (let i = 1; i <= 3; i++) {
-                const t = new P("CitadelBuildTag", tags, "BuildTag" + i);
+            for (let i = 1; i <= 5; i++) {
+                const t = new P("Panel", tags, "BuildTag" + i); t.AddClass("BbfTagChip");
                 const img = new P("Image", t, "TagImage"); img.SetImage = (src) => { img.src = src; };
                 new P("Label", t, "TagLabel");
             }
@@ -120,6 +120,9 @@ function lookup(panel, name) { for (let p = panel; p; p = p.parent) if (name in 
 const PAGE = 10;   // builds per search answer
 // author records the fake deadlock-api.com knows (hero 13 = Haze): account -> [wins, matches]
 const RECORDS = { 4: [30, 52], 5: [1, 9], 7: [12, 20] };
+// the hero's most favourited builds the fake API knows: [author, name, favourites, weekly]
+const FAVS = [["4", "Haze bullet spam", 48213, 120], ["7", "Tank Haze", 1234, 3], ["1", "Haze 58.3% WR", 900, 0]];
+function fnv(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return ("0000000" + h.toString(16)).slice(-8); }
 function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName = null, src = SRC, emptyAnswers = false, webView = "ok" }) {
     db.forEach((b, i) => { b.id = b.id || 1000 + i; });
     const ev = { log: [], previews: [], activated: [], used: [], favs: [], searches: [], searchTimes: [], statReqs: [] };
@@ -212,13 +215,18 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
             const p = new P(type, parent, id);
             if (type === "CitadelHTMLPanel") p.SetURL = (url) => {
                 const cmd = JSON.parse(decodeURIComponent(url.slice(url.indexOf("#") + 1)));
-                ev.statReqs.push({ at: clock, n: cmd.ids.length, hero: cmd.hero, page: url.split("#")[0] });
+                ev.statReqs.push({ at: clock, n: cmd.ids ? cmd.ids.length : 0, cmd: cmd.cmd, hero: cmd.hero, page: url.split("#")[0] });
                 const fire = (name, arg) => handlers.filter((h) => h.panel === p && h.name === name).forEach((h) => h.fn(p, arg));
                 timers.push({ at: clock + 0.4, f: () => {
                     if (webView === "blocked") return fire("HTMLURLChanged", "http://error/");
                     if (webView === "silent") return;
-                    const out = cmd.ids.filter((id) => RECORDS[id] && cmd.hero === 13).map((id) => id + ":" + RECORDS[id][0] + ":" + RECORDS[id][1]);
-                    fire("HTMLTitle", "BBF1|" + cmd.r + "|ok|" + out.join(","));
+                    let body;
+                    if (cmd.cmd === "favs") body = "min:" + Math.min(...FAVS.map((f) => f[2])) + "," + FAVS.map((f) => f[0] + ":" + fnv(f[1]) + ":" + f[2] + ":" + f[3]).join(",") + "," + "x".repeat(0);
+                    else body = cmd.ids.filter((id) => RECORDS[id] && cmd.hero === 13).map((id) => id + ":" + RECORDS[id][0] + ":" + RECORDS[id][1]).join(",");
+                    // like the page: chunks of at most 40 characters here (3500 there), arriving out of order
+                    const n = Math.max(1, Math.ceil(body.length / 40)), parts = [];
+                    for (let i = 0; i < n; i++) parts.push("BBF1|" + cmd.r + "|" + i + "/" + n + "|" + body.slice(i * 40, (i + 1) * 40));
+                    parts.reverse().forEach((p) => fire("HTMLTitle", p));
                 } });
             };
             return p;
@@ -294,13 +302,13 @@ await test("in place: a click by the player pauses checking and keeps their pick
     const br = makeBrowser({ db, defaultList: db, src: IN_PLACE });
     br.start();
     await advance(0.8);
-    assert.match(labels(br)[1], /Checking \d+\/40/);
+    assert.match(labels(br)[2], /Checking \d+\/40/);
     br.list.hover = true;                                                // the cursor moves onto the list...
     timers.push({ at: clock + 5 * FRAME, f: () => br.show(db[30]) });   // ...and the player clicks a row
     timers.push({ at: clock + 1.0, f: () => { br.list.hover = false; } });
     await advance(2);
     assert.equal(br.details.vars.selected_hero_build_name, db[30].name);
-    assert.match(labels(br)[1], /Paused · \d+ unchecked/);
+    assert.match(labels(br)[2], /Paused · \d+ unchecked/);
     const n = br.ev.previews.length;
     await advance(5);
     assert.equal(br.ev.previews.length, n);
@@ -418,7 +426,7 @@ await test("list: clicking a build while loading more pauses the background work
     await advance(10);
     assert.equal(br.ev.searches.length, n);
     assert.equal(br.ev.previews.length, p);
-    assert.match(labels(br)[1], /Paused/);
+    assert.match(labels(br)[2], /Paused/);
 });
 await test("list: filter off shows the game's list again (normal results), bots tagged", async () => {
     reset();
@@ -460,8 +468,8 @@ const recText = (row) => { const r = row.FindChildrenWithClassTraverse("BbfRecor
 const favText = (row) => { const r = row.FindChildrenWithClassTraverse("BbfFav")[0]; return r && r.style.visibility !== "collapse" ? r.text : null; };
 await test("records: each author's W/L on this hero, 0W 0L when none recorded; favourite counts", async () => {
     reset();
-    const db = copy(SAMPLES).map((b, i) => ({ ...b, fav: [5, 1234, 0, 48213, 7, 3, 99, 0][i] }));
-    db.push({ key: "9|Rem first try", author: "9", name: "Rem first try", desc: "never tried this", annotations: [], fav: 2 });
+    const db = copy(SAMPLES);
+    db.push({ key: "9|Rem first try", author: "9", name: "Rem first try", desc: "never tried this", annotations: [] });
     const br = makeBrowser({ db, defaultList: db });
     br.start();
     await advance(12);
@@ -470,13 +478,16 @@ await test("records: each author's W/L on this hero, 0W 0L when none recorded; f
     assert.equal(recText(br.ownRow("Rem first try")), "0W 0L");
     assert.equal(recText(br.ownRow("Default Haze Build")), null, "no record for Valve's builds");
     assert.equal(favText(br.ownRow("Haze bullet spam")), "★ 48.2k");
-    assert.equal(favText(br.ownRow("Rem first try")), "★ 2");
-    assert.ok(br.ev.statReqs.length >= 1 && br.ev.statReqs.every((r) => r.hero === 13 && r.page === "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html"), JSON.stringify(br.ev.statReqs));
-    assert.ok(br.ev.statReqs[0].n >= 4, "batched: " + br.ev.statReqs[0].n);
+    assert.equal(favText(br.ownRow("Tank Haze")), "★ 1.2k");
+    assert.equal(favText(br.ownRow("Rem first try")), "★ <900", "not among the most favourited");
+    assert.equal(favText(br.ownRow("Default Haze Build")), null);
+    assert.ok(br.ev.statReqs.length >= 2 && br.ev.statReqs.every((r) => r.hero === 13 && r.page === "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html"), JSON.stringify(br.ev.statReqs));
+    assert.equal(br.ev.statReqs[0].cmd, "favs", "favourites first");
+    assert.ok(br.ev.statReqs[1].n >= 4, "batched: " + br.ev.statReqs[1].n);
 });
 await test("records: also on the game's own rows (filter off)", async () => {
     reset();
-    const db = copy(SAMPLES).map((b) => ({ ...b, fav: 10 }));
+    const db = copy(SAMPLES);
     const br = makeBrowser({ db, defaultList: db });
     br.start();
     await advance(3);
@@ -484,7 +495,7 @@ await test("records: also on the game's own rows (filter off)", async () => {
     await advance(6);
     const row = br.list.children.find((r) => r.build.name === "Tank Haze");
     assert.equal(recText(row), "12W 8L");
-    assert.equal(favText(row), "★ 10");
+    assert.equal(favText(row), "★ 1.2k");
 });
 await test("records: requests are batched and spaced; more load as more authors appear", async () => {
     reset();
@@ -495,6 +506,7 @@ await test("records: requests are batched and spaced; more load as more authors 
     const t = br.ev.statReqs.map((r) => r.at);
     for (let i = 1; i < t.length; i++) assert.ok(t[i] - t[i - 1] >= 1.99, "spacing " + (t[i] - t[i - 1]));
     assert.ok(br.ev.statReqs.every((r) => r.n <= 100));
+    assert.equal(br.ev.statReqs.filter((r) => r.cmd === "favs").length, 1, "favourites asked once");
     const listed = br.shown().filter((n) => /build \d/.test(n));
     const missing = listed.filter((n) => recText(br.ownRow(n)) !== "0W 0L");
     assert.ok(listed.length >= 15 && !missing.length, "every loaded build got a record; missing " + missing.length + "/" + listed.length + ": " + missing.slice(0, 3).map((n) => n + "=" + recText(br.ownRow(n))).join(", ") + " state " + JSON.stringify(br.ev.statReqs.slice(-3)));
@@ -586,13 +598,73 @@ await test("tags: our rows show the build's tags (standard, item, unknown -> nam
     await advance(8);
     const row = br.ownRow("Haze bullet spam");
     const t = [1, 2, 3].map((i) => row.FindChildTraverse("BuildTag" + i));
-    assert.deepEqual(t.map((x) => x.vars.tag_name), ["Spirit", "Toxic Bullets", "Something New"]);
+    assert.deepEqual(t.map((x) => x.FindChildTraverse("TagLabel").text), ["Spirit", "Toxic Bullets", "Something New"]);
     assert.equal(t[0].FindChildTraverse("TagImage").src, "s2r://panorama/images/builds/citadel_build_tag_spirit.vsvg");
     assert.equal(t[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/upgrades/mods_weapon/toxic_bullets_psd.vtex");
-    assert.ok(t[2].classes.has("ShowLabel"), "unknown tag shows its name");
+    assert.equal(t[2].FindChildTraverse("TagImage").style.visibility, "collapse", "unknown tag: no icon...");
+    assert.equal(t[2].FindChildTraverse("TagLabel").style.visibility, "visible", "...its name instead");
     const row5 = br.ownRow("Spirit Haze (fun)");
-    assert.equal(row5.FindChildTraverse("BuildTag1").vars.tag_name, "Weapon");
+    assert.equal(row5.FindChildTraverse("BuildTag1").FindChildTraverse("TagLabel").text, "Weapon");
     assert.equal(row5.FindChildTraverse("BuildTag2").style.visibility, "collapse");
+});
+
+// ------------------------------------------------------------------ the mod's own tags
+await test("styleTags: annotated and L>R detection", () => {
+    const T = (b) => JSON.parse(JSON.stringify(F.styleTags(b)));
+    assert.deepEqual(T({ name: "x", desc: "", annotations: [] }), { annotated: false, ordered: false });
+    assert.equal(T({ name: "x", desc: "", annotations: ["core"] }).annotated, true);
+    for (const d of ["Follow this build left -> right.", "buy L>R", "L to R please", "Buy order: as listed", "build them in order", "follow the order"]) assert.equal(T({ name: "x", desc: d, annotations: [] }).ordered, true, d);
+    assert.equal(T({ name: "x L->R", desc: "", annotations: [] }).ordered, true);
+    assert.equal(T({ name: "x", desc: "", cats: "Early-Mid\nFollow left to right", annotations: [] }).ordered, true);
+    assert.equal(T({ name: "x", desc: "", annotations: ["#1", "#2", "#3 Sell"] }).ordered, true, "numbered notes");
+    assert.equal(T({ name: "x", desc: "", annotations: ["1st", "2nd"] }).ordered, false, "two numbers are not an order");
+    for (const d of ["Lane: Lash to rush", "Fast as boi", "order a pizza", "+20% fire rate, 1.5k souls"]) assert.equal(T({ name: "x", desc: d, annotations: [] }).ordered, false, d);
+});
+await test("tag filter: picking L>R / Annotated filters the list; our tags show on rows; the × clears it", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "4" ? { ...b, desc: b.desc + " Follow left -> right." } : b));
+    db.push({ key: "8|Plain build", author: "8", name: "Plain build", desc: "nothing special", annotations: [] });
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(10);
+    assert.ok(br.shown().includes("Plain build"));
+    // our tags on rows
+    const row = br.ownRow("Haze bullet spam");
+    const chips = [1, 2, 3, 4, 5].map((i) => row.FindChildTraverse("BuildTag" + i)).filter((c) => c.style.visibility === "visible");
+    assert.deepEqual(chips.map((c) => c.FindChildTraverse("TagLabel").text), ["Annotated", "L>R"]);
+    assert.equal(chips[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/bot_build_filter/tag_ordered.vsvg");
+    br.manager.SetAttributeString("bbf3_tag_filter", "ordered");
+    await advance(1);
+    assert.deepEqual(br.shown(), ["Haze bullet spam"]);
+    assert.match(labels(br).join(" "), /Tags: L>R  ×/);
+    br.manager.SetAttributeString("bbf3_tag_filter", "annotated");
+    await advance(1);
+    assert.deepEqual(br.shown(), ["Haze bullet spam", "Tank Haze"]);
+    ctl(br).children[1].events.onactivate();   // the × on the filter label
+    await advance(1);
+    assert.ok(br.shown().includes("Plain build"));
+});
+await test("picker: our group's tags toggle the filter on the root panel and close the picker", async () => {
+    reset();
+    const PICKER = fs.readFileSync(new URL("../src/bot_build_filter_picker.js", import.meta.url), "utf8");
+    const root = new P("Panel", null, "Root");
+    const manager = new P("Panel", root, "PopupManager");
+    const picker = new P("PopupBuildTagPicker", manager, "");
+    const group = new P("Panel", picker, "BbfTags");
+    const events = [];
+    const $ = { GetContextPanel: () => picker, CreatePanel: (type, parent, id) => { const p = new P(type, parent, id); if (type === "Image") p.SetImage = (src) => { p.src = src; }; return p; },
+                DispatchEvent: (name, panel) => events.push(name) };
+    vm.runInNewContext(PICKER, { $ });
+    const chips = group.children.filter((c) => c.classes.has("BbfPickTag"));
+    assert.deepEqual(chips.map((c) => c.children[1].text), ["Annotated", "L>R"]);
+    assert.equal(chips[1].children[0].src, "s2r://panorama/images/bot_build_filter/tag_ordered.vsvg");
+    chips[1].events.onactivate();
+    assert.equal(root.GetAttributeString("bbf3_tag_filter", ""), "ordered");
+    assert.ok(events.includes("UIPopupButtonClicked"));
+    chips[0].events.onactivate();
+    assert.equal(root.GetAttributeString("bbf3_tag_filter", ""), "ordered,annotated");
+    chips[1].events.onactivate();
+    assert.equal(root.GetAttributeString("bbf3_tag_filter", ""), "annotated");
 });
 
 console.log(failures ? failures + " failed" : "all passed");
