@@ -1,0 +1,25 @@
+<root>
+	<styles>
+		<include src="s2r://panorama/styles/citadel_base_styles.vcss" />
+		<include src="s2r://panorama/styles/popups/popups_shared.vcss" />
+		<include src="s2r://panorama/styles/popups/citadel_popup_build_browser.vcss" />
+	</styles>
+	<PopupBuildBrowser class="PopupPanel Hidden" popupbackground="dim" oncancel="UIPopupButtonClicked()">
+		<Panel id="Background" />
+		<Panel id="BuildsContent">
+			<Panel id="Header">
+				<Label class="block h3" text="#Citadel_BuildBrowser_Title" />
+				<CitadelButton id="CreateBuildButton" class="Medium Fill" text="#CitadelHeroDetails_Builds_CreateButton" onmouseactivate="CitadelHudHeroBuildsCreateNewBuild(); UIPopupButtonClicked();" />
+			</Panel>
+			<CitadelHeroBuildsSelector id="HeroBuildSelector" user_builds_only="false" />
+		</Panel>
+		<Panel id="BackButton">
+			<Panel id="LeftCommandPanel" class="LeftRightFlow commandPanel" onactivate="UIPopupButtonClicked();">
+				<Panel class="FooterCommand DefaultESC light">
+					<CitadelBinding id="BackBinding" action="MenuBack" />
+					<Label class="FooterCommandLabel" text="#menu_exit_db_page" />
+				</Panel>
+			</Panel>
+		</Panel>
+	</PopupBuildBrowser>
+</root>

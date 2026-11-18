@@ -1,0 +1,69 @@
+/* Bot Build Filter: our copy of the public list. It sits exactly over the stock #HeroBuildList and
+   uses the stock row layout (snippet BbfRow = the game's HeroBuildListItem) and stock row styles
+   (citadel_ui_build_selector.vcss is included by the layout). */
+CitadelHeroBuildsSelector .BbfList
+{
+	ignore-parent-flow: true;
+	horizontal-align: left;
+	width: 800px;
+	height: 100%;
+	flow-children: down;
+	overflow: squish scroll;
+	background-color: #10130D;
+	visibility: collapse;
+}
+CitadelHeroBuildsSelector .BbfList.BbfShown
+{
+	visibility: visible;
+}
+/* The stock rows' tag chips are filled in by the game; ours have no data for them. */
+CitadelHeroBuildsSelector .BbfList .BuildTagContainer
+{
+	visibility: collapse;
+}
+CitadelHeroBuildsSelector .BbfList .HeroBuildListItem.BbfUnchecked
+{
+	opacity: 0.8;
+}
+.BbfMore
+{
+	width: 100%;
+	min-height: 64px;
+	flow-children: right;
+	padding: 10px 20px;
+}
+.BbfMoreInner
+{
+	horizontal-align: center;
+	vertical-align: center;
+	flow-children: right;
+}
+.BbfMore Label
+{
+	vertical-align: center;
+	font-size: 18px;
+	color: #FFEFD7;
+	opacity: 0.55;
+}
+.BbfMore:hover Label
+{
+	opacity: 1;
+}
+.BbfSpinner
+{
+	width: 22px;
+	height: 22px;
+	margin-right: 10px;
+	vertical-align: center;
+	background-image: url("s2r://panorama/images/control_icons/spinner_png.vtex");
+	background-size: contain;
+	animation-name: RotateIcon;
+	animation-duration: 2s;
+	animation-timing-function: linear;
+	animation-iteration-count: infinite;
+	visibility: collapse;
+}
+.BbfMore.BbfLoading .BbfSpinner
+{
+	visibility: visible;
+}
