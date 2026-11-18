@@ -26,9 +26,7 @@
         chip.SetHasClass("BbfOn", on.indexOf(t.id) >= 0);
         var img = $.CreatePanel("Image", chip, "");
         try { img.SetImage(t.icon); } catch (e) {}
-        var l = $.CreatePanel("Label", chip, "");
-        l.text = t.name;
-        chip.SetPanelEvent("onmouseover", function () { try { $.DispatchEvent("UIShowTextTooltip", chip, t.tip + "<br>A Bot Build Filter tag: it filters the builds the mod has checked. Click again to remove it."); } catch (e) {} });
+        chip.SetPanelEvent("onmouseover", function () { try { $.DispatchEvent("UIShowTextTooltip", chip, t.name + ": " + t.tip + "<br>A Bot Build Filter tag: it filters the builds the mod has checked. Click again to remove it."); } catch (e) {} });
         chip.SetPanelEvent("onmouseout", function () { try { $.DispatchEvent("UIHideTextTooltip", chip); } catch (e) {} });
         chip.SetPanelEvent("onactivate", function () {
             var cur = current(), i = cur.indexOf(t.id);

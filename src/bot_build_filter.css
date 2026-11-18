@@ -102,8 +102,8 @@ PopupBuildTagPicker.PopupPanel
 	border-radius: 4px;
 	box-shadow: #000000AA 0px 0px 24px 0px;
 }
-/* Our tags in the picker: the same box as the game's CitadelBuildTag there (citadel_ui_build_tag.css,
-   shown with its label). */
+/* Our tags in the picker: the same box as the game's CitadelBuildTag there (citadel_ui_build_tag.css):
+   an icon, the name in the tooltip. */
 .BbfPickTag
 {
 	flow-children: right;
@@ -124,16 +124,4 @@ PopupBuildTagPicker.PopupPanel
 {
 	width: 30px;
 	height: 30px;
-}
-.BbfPickTag Label
-{
-	vertical-align: center;
-	margin-left: 10px;
-	padding-right: 10px;
-	font-weight: bold;
-	font-size: 14px;
-	max-width: 100px;
-	max-height: 64px;
-	text-overflow: shrink;
-	color: #FFEFD7AA;
 }

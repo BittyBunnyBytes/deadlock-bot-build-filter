@@ -46,7 +46,10 @@
     // ------------------------------------------------------------------ settings
     var CONFIG = {
         threshold: 3,             // score at which a build counts as a bot build
-        autoScan: true,           // preview public rows automatically to read descriptions/annotations
+        autoScan: true,           // check builds automatically (through deadlock-api.com; previews only if previewChecks)
+        // Read builds by previewing them in the details pane (visible, and heavy for the game). Off: build
+        // texts come from deadlock-api.com in the background; the "Check" button can still preview on demand.
+        previewChecks: false,
         scanMaxRows: 120,         // at most this many rows per pass
         settleFrames: 2,          // a preview counts once the details pane reads the same on this many frames in a row
         learnAuthors: true,       // once an account posted a bot build (by its own text), its other builds count as bot builds
@@ -79,6 +82,7 @@
             relayUrl: "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html",
             batch: 100,           // authors per request
             favsLimit: 400,       // favourites: the hero's this many most favourited builds (one request)
+            buildsBatch: 40,      // authors per build-text request
             minSpacingSeconds: 2, // between requests (the API allows 100 a second; this stays far below)
             timeoutSeconds: 15,
             reuseSeconds: 1800    // records are kept this long within a game session
@@ -563,12 +567,15 @@
     var R = CONFIG.rate;
     var bucket = { tokens: R.burst, at: now(), nextAt: 0, backoff: 0, backoffUntil: 0 };
     var searchLog = recall("bbf2_search_log", []);
-    function rateWait() {
+    // The player's own picks only wait for the minimum spacing and the hourly cap; the burst allowance
+    // and the back-off are for background searches.
+    function rateWait(background) {
         var t = now();
         bucket.tokens = Math.min(R.burst, bucket.tokens + (t - bucket.at) / R.refillSeconds);
         bucket.at = t;
         searchLog = searchLog.filter(function (s) { return t - s < 3600; });
-        var w = Math.max(0, bucket.nextAt - t, bucket.backoffUntil - t, bucket.tokens >= 1 ? 0 : (1 - bucket.tokens) * R.refillSeconds);
+        var w = Math.max(0, bucket.nextAt - t);
+        if (background) w = Math.max(w, bucket.backoffUntil - t, bucket.tokens >= 1 ? 0 : (1 - bucket.tokens) * R.refillSeconds);
         if (searchLog.length >= R.perHour) w = Math.max(w, searchLog[0] + 3600 - t);
         return w;
     }
@@ -578,14 +585,14 @@
     async function takeToken(background) {
         for (;;) {
             if (!alive || stopWork || (background && !listOn())) return false;
-            var w = rateWait();
+            var w = rateWait(background);
             if (w <= 0) break;
             rateNote = searchLog.length >= R.perHour ? "hourly search limit reached, next in " + Math.ceil(w / 60) + " min" : "next search in " + Math.ceil(w) + "s";
             drawControl(); drawMore();
             await delay(Math.min(w, 0.5));
         }
         rateNote = "";
-        bucket.tokens -= 1;
+        if (background) bucket.tokens -= 1;
         bucket.nextAt = now() + R.minSpacingSeconds;
         searchLog.push(now());
         keep("bbf2_search_log", searchLog);
@@ -608,6 +615,7 @@
         if (!isId && !listOn()) return null;
         stockIsDefault = false;
         ourText = String(text);
+        if (!isId) searchEntry.style.opacity = "0";   // our words are not the player's business
         searchEntry.text = ourText;
         try { $.DispatchEvent("CitadelBuildBrowserRefresh", selector, true); } catch (e) { clearOurText(); return null; }
         await waitFor(loading, 0.6);
@@ -622,6 +630,7 @@
     function clearOurText() {
         if (ourText !== null && String(searchEntry.text || "") === ourText) searchEntry.text = "";
         ourText = null;
+        searchEntry.style.opacity = "1";
     }
     // Back to the normal list (one request). The game's My Builds tab is a filter over the same results,
     // so it needs the normal list to show your own, favourited and active builds.
@@ -653,21 +662,22 @@
     statusLabel.style.verticalAlign = "center";
     toggleLabel.SetPanelEvent("onactivate", function () { setOn(!state.on); });
     // Busy: pause. Paused: resume. Idle: check again.
+    // Busy: pause. Paused: resume (background work only). Idle with unchecked builds: check them in detail.
     statusLabel.SetPanelEvent("onactivate", function () {
         if (busy) { pause("paused from the control"); return; }
-        paused = false; stopWork = false;
-        if (listOn()) { verifyList(); } else scanStock(true);
+        if (paused) { paused = false; stopWork = false; render(); return; }
+        if (listOn()) previewCheck(); else scanStock(true);
     });
     tooltip(toggleLabel, "Bot Build Filter: takes public builds generated from win rates out of the list (they plug a website, share a templated description, and annotate items with \"+WR x%\") and loads more human builds as you scroll.<br>Click to switch to the game's own list with suspected builds tagged BOT?.");
-    tooltip(statusLabel, "Builds are previewed once to read their description and item notes (your active build is not changed). Clicking any build pauses this.");
+    tooltip(statusLabel, "Build texts come from deadlock-api.com in the background. Builds it does not have yet can be checked here: each is previewed once in the details pane (your active build is not changed). Clicking any build pauses this.");
     function drawControl() {
         var count = listOn() && pool ? "  ·  " + shownEntries().length + " builds" : flaggedCount ? (state.on ? "  ·  " + hiddenCount + " hidden" : "  ·  " + flaggedCount + " tagged") : "";
         toggleLabel.text = "Bot filter: " + (state.on ? "ON" : "OFF") + count;
         toggleLabel.style.color = state.on ? "#9be7a9" : "#FFEFD7";
         var pending = pendingCount();
         statusLabel.text = busy ? "⟳ " + (progress || "Working") + (rateNote ? " · " + rateNote : "") + "  ·  pause"
-            : paused ? "Paused" + (pending ? " · " + pending + " unchecked" : "") + "  ·  resume"
-            : pending ? "Check " + pending + " unchecked" : "";
+            : paused ? "Paused  ·  resume"
+            : pending ? "Check " + pending + " in detail" : "";
         statusLabel.style.color = busy ? "#e8c66a" : paused ? "#ff9f6a" : "#c8b28a";
         filterLabel.text = currentFilter.length ? "Tags: " + currentFilter.map(function (f) { return f === "ordered" ? "L>R" : "Annotated"; }).join(" + ") + "  ×" : "";
         filterLabel.style.visibility = currentFilter.length && publicMode() ? "visible" : "collapse";
@@ -675,8 +685,8 @@
         if (stats.state === "failed" && !stats.toldUser) { stats.toldUser = true; tooltip(toggleLabel, "Author records (W/L) are unavailable: " + stats.note + "."); }
     }
     function pendingCount() {
-        if (listOn() && pool) return pool.entries.filter(function (e) { return e.author !== "0" && (!known[e.key] || known[e.key].annotations === null); }).length;
-        return rows().filter(worthReading).length;
+        if (listOn() && pool) return pool.entries.filter(function (e) { return e.author !== "0" && (!known[e.key] || known[e.key].annotations === null) && apiAsked[e.author]; }).length;
+        return rows().filter(function (r) { return worthReading(r) && (!CONFIG.previewChecks ? apiAsked[r.author] : true); }).length;
     }
 
     // ------------------------------------------------------------------ the stock list, filtered in place (filter off, or the player's own search)
@@ -762,6 +772,11 @@
         'function fail(r,e){document.title="BBF1|"+r+"|err|"+((e&&e.message)||e)}' +
         'function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}' +
         'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}' +
+        'if(P.cmd==="builds"){var out=[],q=P.authors.slice(),busy=0;function one(){if(!q.length){if(!busy)send(P.r,JSON.stringify(out));return}var a=q.shift();busy++;' +
+        'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){for(var i=0;i<l.length;i++){var h=l[i].hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];' +
+        'for(var j=0;j<c.length;j++){cats.push((c[j].name||"")+" "+(c[j].description||""));var m=c[j].mods||[];for(var k=0;k<m.length;k++)if(m[k].annotation)notes.push(String(m[k].annotation).slice(0,80))}' +
+        'out.push([String(h.author_account_id),String(h.name||""),h.hero_build_id|0,l[i].num_favorites|0,l[i].num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400)])}})' +
+        '.catch(function(){out.push(["!",String(a)])}).then(function(){busy--;one()})}for(var w=0;w<6;w++)one();return}' +
         'if(P.cmd==="favs"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400)).then(function(a){' +
         'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}' +
         'send(P.r,"min:"+min+","+o.join(","))}).catch(function(e){fail(P.r,e)});return}' +
@@ -777,6 +792,7 @@
     var SC = CONFIG.stats;
     var stats = { heroId: 0, heroName: "", data: {}, state: "off", note: "", req: 0, cur: null, parts: null, sentAt: 0, nextAt: 0, fails: 0, view: null };
     var favs = { data: null, min: -1, tried: 0 };   // "author|namehash" -> [favourites, weekly]
+    var apiAsked = {};           // authors whose builds for this hero were asked of deadlock-api.com (this session)
     function heroFromDefaultName(name) {
         if (!name) return null;
         var probe = $.CreatePanel("Panel", popup, ""), hit = null;
@@ -803,6 +819,7 @@
         stats.heroId = hero.id; stats.heroName = hero.name;
         var kept = recall(statsKey(), null);
         if (kept && now() - kept.at < SC.reuseSeconds) stats.data = kept.data || {};
+        apiAsked = recall("bbf3_api_asked_" + stats.heroId, {});
         var keptFavs = recall(favsKey(), null);
         if (keptFavs && now() - keptFavs.at < SC.reuseSeconds) { favs.data = keptFavs.data; favs.min = keptFavs.min; }
         stats.state = "ready";
@@ -851,7 +868,23 @@
     function finish(body) {
         var cmd = stats.cur;
         var recs = body ? body.split(",") : [];
-        if (cmd.cmd === "favs") {
+        if (cmd.cmd === "builds") {
+            var got = 0, failed = {};
+            JSON.parse(body || "[]").forEach(function (b) {
+                if (b[0] === "!") { failed[b[1]] = true; return; }
+                var key = keyOf(b[0], b[1]);
+                // The API's copy of the build stands in for a preview (unless a preview already read it).
+                if (!known[key] || known[key].src === "api" || known[key].annotations === null) {
+                    known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], src: "api" };
+                    got++;
+                }
+            });
+            cmd.authors.forEach(function (a) { if (!failed[a]) apiAsked[a] = true; });
+            keep("bbf3_api_asked_" + stats.heroId, apiAsked);
+            sharedCache = null;
+            saveKnown();
+            log("build texts: " + got + " builds from " + cmd.authors.length + " authors");
+        } else if (cmd.cmd === "favs") {
             favs.data = {};
             recs.forEach(function (rec) {
                 var f = rec.split(":");
@@ -888,7 +921,9 @@
         if (stats.state === "off") startStats();
         if (stats.state === "waiting" && now() - stats.sentAt > SC.timeoutSeconds) statsFailed("no answer from deadlock-api.com");
         if (stats.state !== "ready" || now() < stats.nextAt) return;
-        if (!favs.data && favs.tried < 2) { send({ cmd: "favs", hero: stats.heroId, limit: SC.favsLimit }); return; }
+        // Build texts for builds we have nothing on, then authors' records.
+        var need = buildsWanted();
+        if (need.length) { send({ cmd: "builds", hero: stats.heroId, authors: need.slice(0, SC.buildsBatch) }); return; }
         if (statsAuthorsVersion !== version) {
             statsAuthorsVersion = version;
             var seen = {};
@@ -896,6 +931,17 @@
             authorsOf().forEach(function (a) { if (a && a !== "0" && !stats.data[a] && !seen[a]) { seen[a] = true; statsWant.push(a); } });
         }
         if (statsWant.length) { send({ cmd: "stats", ids: statsWant.slice(0, SC.batch), hero: stats.heroId }); statsWant = statsWant.slice(SC.batch); }
+    }
+    var buildsWantCache = null, buildsWantVersion = -1;
+    function buildsWanted() {
+        if (buildsWantVersion === version && buildsWantCache) return buildsWantCache.filter(function (a) { return !apiAsked[a]; });
+        buildsWantVersion = version;
+        var seen = {}, out = [];
+        var items = listOn() && pool ? pool.entries : rows();
+        items.forEach(function (e) {
+            if (e.author && e.author !== "0" && !apiAsked[e.author] && !seen[e.author] && (!known[e.key] || known[e.key].annotations === null)) { seen[e.author] = true; out.push(e.author); }
+        });
+        return (buildsWantCache = out);
     }
     function compact(n) {
         if (!(n >= 0)) return "";
@@ -906,7 +952,10 @@
     // Favourites of a build: the API's count when it is among the most favourited, "fewer than the
     // least of those" otherwise; null while unknown.
     function favInfo(author, name) {
-        if (!favs.data || !author || author === "0") return null;
+        if (!author || author === "0") return null;
+        var k = known[keyOf(author, name)];
+        if (k && typeof k.fav === "number") return { n: k.fav, w: k.wfav || 0 };
+        if (!favs.data) return null;
         var f = favs.data[author + "|" + fnv(name)];
         if (f) return { n: f[0], w: f[1] };
         return favs.min > 0 ? { below: favs.min } : null;
@@ -1100,9 +1149,27 @@
 
     // Preview the unchecked builds of the stock list as it is now, and fold the results into the pool.
     async function verifyCurrent(what) {
+        if (!CONFIG.previewChecks) return;   // build texts come from deadlock-api.com instead
         var todo = rows().filter(worthReading).slice(0, CONFIG.scanMaxRows);
         if (todo.length) await readRows(todo, what);
         saveKnown();
+    }
+    // The "Check" button: preview the unchecked builds of the stock list now (the player asked for it).
+    async function previewCheck() {
+        if (busy || !listOn()) return;
+        busy = true; stopWork = false; paused = false;
+        try {
+            // The stock results may hold a search by now: preview the normal list's builds.
+            if (!stockIsDefault) { restoreStock(); await waitFor(loading, 0.6); await waitFor(function () { return !loading(); }, CONFIG.searchTimeoutSeconds); forgetRows(); }
+            var todo = rows().filter(worthReading).slice(0, CONFIG.scanMaxRows);
+            if (todo.length) await readRows(todo, "Checking");
+            saveKnown(); addRows(rows(), false); savePool();
+        } catch (e) { log("check: " + e); }
+        finally { busy = false; progress = ""; }
+        // Put back the build the player had picked in our list.
+        var sel = selectedKey && pool ? pool.entries.filter(function (x) { return x.key === selectedKey; })[0] : null;
+        if (sel && detailsName() !== sel.name) await load(sel);
+        render();
     }
     // Opening: the normal list's human builds first, checked; then enough loading to fill a screen.
     async function verifyList() {
@@ -1120,7 +1187,7 @@
                 ", L>R on " + checked.filter(function (e) { var t = ownTagsOf(e.key, e.author, e.name); return t && t.ordered; }).length);
         } catch (e) { log("verify: " + e); pause("an error while checking"); }
         finally { busy = false; progress = ""; render(); }
-        if (!paused && shownEntries().length < CONFIG.minRows) loadMore("fill");
+        if (!paused && !(pool && pool.dry) && shownEntries().length < CONFIG.minRows) loadMore("fill");
     }
     // One "load more": search until batchMinNew new builds were added (or batchMaxSearches searches).
     async function loadMore(why) {
@@ -1128,8 +1195,7 @@
         ensurePool();
         if (pool.exhausted) { drawMore(); return; }
         busy = true; stopWork = false;
-        selectedKey = null;   // previews are about to move the details pane
-        var added = 0, searches = 0;
+        var added = 0, searches = 0, shownId = detailsId();
         try {
             while (searches < CONFIG.batchMaxSearches && added < CONFIG.batchMinNew && !stopWork && !paused && listOn()) {
                 var term = nextTerm();
@@ -1145,6 +1211,13 @@
                 savePool();
                 render();
             }
+            // A search can move the details pane: put back the build the player picked in our list.
+            if (selectedKey && detailsId() !== shownId) {
+                var sel = pool.entries.filter(function (x) { return x.key === selectedKey; })[0];
+                var back = sel ? stockRowFor(sel) : null;
+                if (back) click(back.panel);
+                else if (sel && idOf(sel)) { busy = false; await load(sel); busy = true; }
+            }
         } catch (e) { log("load more: " + e); pause("an error while loading more"); }
         finally {
             busy = false; progress = "";
@@ -1152,11 +1225,16 @@
             render();
             log("load more (" + why + "): +" + added + " builds from " + searches + " searches, " + shownEntries().length + " listed");
         }
-        if (!paused && !pool.exhausted && listOn() && shownEntries().length < CONFIG.minRows) $.Schedule(0.1, function () { if (alive) loadMore("fill"); });
+        // Keep filling a short list, unless a whole batch found nothing new (then scrolling asks for more).
+        if (why === "fill" && added === 0) pool.dry = true;
+        else if (added > 0) pool.dry = false;
+        if (!paused && !pool.exhausted && !pool.dry && listOn() && shownEntries().length < CONFIG.minRows) $.Schedule(0.1, function () { if (alive) loadMore("fill"); });
     }
 
     // ------------------------------------------------------------------ picking builds in our list
     function stockRowFor(e) { return rows().filter(function (r) { return r.key === e.key; })[0] || null; }
+    // A build's id may arrive after its entry was made (with its texts from deadlock-api.com).
+    function idOf(e) { var k = known[e.key]; return e.id || (k && k.id) || 0; }
     var pickSeq = 0;
     async function load(e) {
         var seq = ++pickSeq;
@@ -1164,17 +1242,17 @@
         render();
         if (busy) { pause(); await waitFor(function () { return !busy; }, 12); }
         stopWork = false;   // background work stays paused; this search is the player's own
-        var row = stockRowFor(e);
-        if (!row && e.id) {
+        var row = stockRowFor(e), id = idOf(e);
+        if (!row && id) {
             busy = true; userLoading = true;
             progress = "Loading " + e.name;
             drawControl();
-            try { await search(e.id, true); } finally { busy = false; userLoading = false; progress = ""; }
+            try { await search(id, true); } finally { busy = false; userLoading = false; progress = ""; }
             row = stockRowFor(e);
         }
         if (seq !== pickSeq) return null;
         if (!row) { log("could not load " + e.name); if (selectedKey === e.key) selectedKey = null; render(); return null; }
-        if (!(e.id && detailsId() === e.id)) {
+        if (!(id && detailsId() === id)) {
             click(row.panel);
             await waitFor(function () { return detailsName() === e.name; }, 1.5);
         }
@@ -1243,7 +1321,7 @@
             tooltip(refs.nameArea, e.desc.length > 500 ? e.desc.slice(0, 500) + "..." : e.desc);
         }
     }
-    var renderSig = "";
+    var renderSig = "", madeAt = 0, madeCount = 0;   // new rows made in the current frame
     function render() {
         drawControl();
         if (!ownList) return;
@@ -1257,12 +1335,17 @@
         var sig = version + "|" + selectedKey + "|" + stock.map(function (r) { return r.key + (r.panel.BHasClass("ActiveBuild") ? "*" : "") + (r.panel.BHasClass("Favorite") ? "+" : ""); }).join("\n");
         if (sig === renderSig) { drawMore(); return; }
         renderSig = sig;
-        var entries = shownEntries(), wanted = {};
+        var entries = shownEntries(), wanted = {}, deferred = false;
+        if (Date.now() !== madeAt) { madeAt = Date.now(); madeCount = 0; }
         var prev = null;
         entries.forEach(function (e, i) {
             wanted[e.key] = true;
             var r = ownRows[e.key];
-            if (!valid(r)) { r = makeRow(e); ownRows[e.key] = r; }
+            if (!valid(r)) {
+                // At most a dozen new rows per pass, so a batch of new builds does not stall a frame.
+                if (madeCount >= 12) { deferred = true; return; }
+                r = makeRow(e); ownRows[e.key] = r; madeCount++;
+            }
             syncRow(r, e, live[e.key]);
             // Keep list order: each row right after the previous one (the first one at the top).
             if (ownList.GetChild(i) !== r) {
@@ -1273,6 +1356,7 @@
         });
         Object.keys(ownRows).forEach(function (k) { if (!wanted[k]) { try { ownRows[k].DeleteAsync(0); } catch (err) {} delete ownRows[k]; delete ownRefs[k]; } });
         if (prev) ownList.MoveChildAfter(moreRow, prev);
+        if (deferred) renderSig = "";   // the rest next pass
         drawMore();
     }
     function drawMore() {
@@ -1327,7 +1411,7 @@
                         // A new list (another hero or search): a pause from the last one is over.
                         if (paused && autoScannedFor) paused = false;
                         autoScannedFor = sig;
-                        if (CONFIG.autoScan && state.on && rowList.some(worthReading))
+                        if (CONFIG.autoScan && CONFIG.previewChecks && state.on && rowList.some(worthReading))
                             $.Schedule(0.3, function () { if (alive && listSignature === sig && !paused && !busy && !listOn()) scanStock(false); });
                     }
                 }
