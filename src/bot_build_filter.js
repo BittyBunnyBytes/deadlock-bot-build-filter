@@ -37,6 +37,10 @@
     var ITEM_NAMES = []; /*@ITEM_NAMES@*/
     // { hero class: hero id }, filled in by tools/build.py from the game's scripts/heroes.vdata.
     var HERO_IDS = {}; /*@HERO_IDS@*/
+    // { ability/item key: icon path }, filled in by tools/build.py from scripts/abilities.vdata (tag icons).
+    var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/
+    var STANDARD_TAGS = ["weapon", "vitality", "spirit", "damage", "utility", "healing", "crowd_control", "mobility",
+                         "melee", "headshots", "debuff", "complexity_1", "complexity_2", "complexity_3"];
 
     // ------------------------------------------------------------------ settings
     var CONFIG = {
@@ -297,6 +301,7 @@
     // ------------------------------------------------------------------ state of this popup
     var alive = true, busy = false, stopWork = false, paused = false, progress = "";
     var userSearch = false;      // the player typed in the search box: their results, filtered in place
+    var userLoading = false;     // a build the player picked is being loaded
     var stockIsDefault = true;   // the stock list holds the normal (unsearched) public list
     var heroKey = "";            // name of Valve's default build row: tells heroes apart for the pool cache
     var pool = null;             // { at, entries: [entry], term: next search word index, exhausted }
@@ -503,9 +508,11 @@
         return w;
     }
     var rateNote = "";
-    async function takeToken() {
+    // Background searches (loading more) give up as soon as our list is not showing; the player's own
+    // pick (loading a build by ID) does not.
+    async function takeToken(background) {
         for (;;) {
-            if (!alive || stopWork) return false;
+            if (!alive || stopWork || (background && !listOn())) return false;
             var w = rateWait();
             if (w <= 0) break;
             rateNote = searchLog.length >= R.perHour ? "hourly search limit reached, next in " + Math.ceil(w / 60) + " min" : "next search in " + Math.ceil(w) + "s";
@@ -527,22 +534,35 @@
     }
     // Runs one stock search; the search box is emptied again afterwards (the results stay), so the
     // game's tabs and the player's own searches never see our words.
+    // The game reads the search box a moment after the refresh request, so our text stays in it until
+    // the answer is in; it is then emptied again (the results stay), so the game's tabs and the player's
+    // own searches never see our words.
+    var ourText = null;
     async function search(text, isId) {
-        if (!await takeToken()) return null;
+        if (!await takeToken(!isId)) return null;
+        if (!isId && !listOn()) return null;
         stockIsDefault = false;
-        searchEntry.text = String(text);
-        try { $.DispatchEvent("CitadelBuildBrowserRefresh", selector, true); } catch (e) { searchEntry.text = ""; return null; }
-        searchEntry.text = "";
+        ourText = String(text);
+        searchEntry.text = ourText;
+        try { $.DispatchEvent("CitadelBuildBrowserRefresh", selector, true); } catch (e) { clearOurText(); return null; }
         await waitFor(loading, 0.6);
         var done = await waitFor(function () { return !loading(); }, CONFIG.searchTimeoutSeconds);
         await nextFrame();
+        clearOurText();
         var got = done ? rows() : [];
         if (!isId) backoff(done && got.length > 0);
         return done ? got : null;
     }
+    function clearOurText() {
+        if (ourText !== null && String(searchEntry.text || "") === ourText) searchEntry.text = "";
+        ourText = null;
+    }
+    // Back to the normal list (one request). The game's My Builds tab is a filter over the same results,
+    // so it needs the normal list to show your own, favourited and active builds.
     function restoreStock() {
         if (stockIsDefault || !searchEntry) return;
         stockIsDefault = true;
+        ourText = null;
         searchEntry.text = "";
         try { $.DispatchEvent("CitadelBuildBrowserClearSearch", selector); } catch (e) {}
     }
@@ -592,10 +612,12 @@
         var p = row.panel, tag = byClass(p, "BbfTag");
         var flagged = !!(verdict && verdict.bot);
         // The game reuses row panels for other builds, so every row is re-decided on every pass.
-        var protectedRow = p.BHasClass("ActiveBuild") || p.BHasClass("Favorite") || !publicMode();
+        // Hidden with the game's own class for that: it only hides a row in the Public tab and leaves the
+        // My Builds rules (own, favourited, active builds) alone. Only a class we added is ever removed.
+        var protectedRow = p.BHasClass("ActiveBuild") || p.BHasClass("Favorite");
         var hide = flagged && state.on && !protectedRow;
-        if (hide) { p.style.visibility = "collapse"; p.SetAttributeString("bbf_touched", "1"); }
-        else if (p.GetAttributeString("bbf_touched", "") === "1") p.style.visibility = "visible";
+        if (hide) { if (!p.BHasClass("HidePublic")) { p.AddClass("HidePublic"); p.SetAttributeString("bbf_hid", "1"); } }
+        else if (p.GetAttributeString("bbf_hid", "") === "1") { p.RemoveClass("HidePublic"); p.SetAttributeString("bbf_hid", ""); }
         if (flagged && !hide) {
             if (!tag) {
                 tag = label(byClass(p, "nameRow") || p, "BOT?", 13, "#ff8a6a");
@@ -818,7 +840,7 @@
     }
 
     // entry: { key, author, name, id, desc, classes[] }
-    function poolKey() { return "bbf2_pool_" + heroKey; }
+    function poolKey() { return "bbf3_pool_" + heroKey; }
     function savePool() { if (pool && heroKey) { pool.at = now(); keep(poolKey(), pool); } }
     function ensurePool() {
         if (pool) return;
@@ -826,10 +848,60 @@
         pool = kept && now() - kept.at < CONFIG.poolReuseSeconds ? kept : { at: now(), entries: [], term: 0, exhausted: false };
         version++;
     }
+    // The build's tags (up to three): standard tags, abilities or items. The tag panel only shows a
+    // name ({s:tag_name}) and an icon; the icon is found by name from the game's own data.
+    var tagIcons = null;
+    function tagIcon(name) {
+        if (!tagIcons) {
+            tagIcons = {};
+            var probe = $.CreatePanel("Panel", popup, "");
+            probe.style.visibility = "collapse";
+            Object.keys(ABILITY_IMAGES).forEach(function (k) { var n = loc("#" + k, probe); if (n && n.charAt(0) !== "#" && !tagIcons[n]) tagIcons[n] = ABILITY_IMAGES[k]; });
+            STANDARD_TAGS.forEach(function (k) { var n = loc("#citadel_build_tag_" + k, probe); if (n && n.charAt(0) !== "#") tagIcons[n] = "s2r://panorama/images/builds/citadel_build_tag_" + k + ".vsvg"; });
+            try { probe.DeleteAsync(0); } catch (e) {}
+        }
+        return tagIcons[name] || "";
+    }
+    function tagsOf(panel) {
+        var out = [];
+        for (var i = 1; i <= 3; i++) {
+            var t = child(panel, "BuildTag" + i);
+            if (!valid(t) || t.BHasClass("Empty")) continue;
+            var name = loc("{s:tag_name}", t);
+            if (name) out.push(name);
+        }
+        return out;
+    }
+    function drawTags(r, tags) {
+        var box = byClass(r, "BuildTagContainer");
+        if (!box) return;
+        var sig = tags.join("|");
+        if (box.GetAttributeString("bbf_tags", "?") === sig) return;
+        box.SetAttributeString("bbf_tags", sig);
+        for (var i = 1; i <= 3; i++) {
+            var t = child(r, "BuildTag" + i), name = tags[i - 1];
+            if (!valid(t)) continue;
+            if (!name) { t.style.visibility = "collapse"; continue; }
+            t.style.visibility = "visible";
+            t.RemoveClass("Empty");
+            t.SetDialogVariable("tag_name", name);
+            var img = child(t, "TagImage"), icon = tagIcon(name);
+            if (!img) {   // the tag panel did not build its own layout: give it an image and a name
+                img = $.CreatePanel("Image", t, "TagImage");
+                img.style.width = "26px"; img.style.height = "26px";
+                var l = label(t, name, 14, "#FFEFD7"); l.style.verticalAlign = "center"; l.style.marginLeft = "4px"; l.style.visibility = "collapse"; l.AddClass("BbfTagName");
+            }
+            if (icon) { try { img.SetImage(icon); } catch (e) { icon = ""; } }
+            t.SetHasClass("ShowLabel", !icon);
+            var nameLabel = byClass(t, "BbfTagName");
+            if (nameLabel) nameLabel.style.visibility = icon ? "collapse" : "visible";
+            tooltip(t, name);
+        }
+    }
     function favCount(panel) { var f = digits(loc("{i:favorite_count}", panel)); return f === "" ? -1 : Number(f); }
     function entryFor(r) {
         var k = known[r.key] || {};
-        return { key: r.key, author: r.author, name: r.name, id: k.id || 0, desc: k.desc || "", classes: rowClasses(r.panel), fav: favCount(r.panel) };
+        return { key: r.key, author: r.author, name: r.name, id: k.id || 0, desc: k.desc || "", classes: rowClasses(r.panel), fav: favCount(r.panel), tags: tagsOf(r.panel) };
     }
     // Add stock rows that are not bot builds; `front` puts new ones before what is already listed
     // (the normal list leads; Valve's default builds always go last when shown).
@@ -838,7 +910,7 @@
         pool.entries.forEach(function (e) { have[e.key] = e; });
         rowList.forEach(function (r) {
             var e = have[r.key];
-            if (e) { var k = known[r.key]; if (k && k.id) e.id = k.id; if (k) e.desc = k.desc || e.desc; e.classes = rowClasses(r.panel); var f = favCount(r.panel); if (f >= 0) e.fav = f; return; }
+            if (e) { var k = known[r.key]; if (k && k.id) e.id = k.id; if (k) e.desc = k.desc || e.desc; e.classes = rowClasses(r.panel); var f = favCount(r.panel); if (f >= 0) e.fav = f; var tg = tagsOf(r.panel); if (tg.length) e.tags = tg; return; }
             if (result[r.key] && result[r.key].bot) return;
             e = entryFor(r);
             have[r.key] = e;
@@ -929,10 +1001,10 @@
         stopWork = false;   // background work stays paused; this search is the player's own
         var row = stockRowFor(e);
         if (!row && e.id) {
-            busy = true;
+            busy = true; userLoading = true;
             progress = "Loading " + e.name;
             drawControl();
-            try { await search(e.id, true); } finally { busy = false; progress = ""; }
+            try { await search(e.id, true); } finally { busy = false; userLoading = false; progress = ""; }
             row = stockRowFor(e);
         }
         if (seq !== pickSeq) return null;
@@ -986,7 +1058,8 @@
         return r;
     }
     function syncRow(r, e, live) {
-        if (live) { var f = favCount(live.panel); if (f >= 0) e.fav = f; }
+        if (live) { var f = favCount(live.panel); if (f >= 0) e.fav = f; var tg = tagsOf(live.panel); if (tg.length) e.tags = tg; }
+        drawTags(r, e.tags || []);
         if (e.author !== "0") {
             var info = byClass(r, "InfoContainer") || r;
             statsLabels(r, e.author, typeof e.fav === "number" ? e.fav : -1, info, child(r, "FavoriteIcon"));
@@ -1055,9 +1128,11 @@
             // The player typed in the search box: show their results, filtered in place.
             if (searchEntry) {
                 var text = String(searchEntry.text || "");
-                if (!userSearch && text) { userSearch = true; stockIsDefault = false; if (busy) pause("the player searched"); render(); }
+                if (!userSearch && text && text !== ourText) { userSearch = true; stockIsDefault = false; if (busy) pause("the player searched"); render(); }
                 else if (userSearch && !text) { userSearch = false; render(); }
             }
+            // Leaving our list (My Builds, filter off, the player's search): background work stops now.
+            if (busy && !listOn() && !userLoading && ownList) stopWork = true;
             if (!busy && !loading() && ticks++ % 2 === 0) {
                 var rowList = apply();
                 var sig = rowList.map(function (r) { return r.key; }).join("\n");
@@ -1070,8 +1145,8 @@
                     else if (wasListOn && pool && !paused && !pool.exhausted && nearBottom()) loadMore("scrolled");
                 } else {
                     wasListOn = false;
-                    // Back on the Public tab, the game asks for the normal list again.
-                    if (!publicMode()) stockIsDefault = true;
+                    // My Builds filters the current results: give it the normal list back.
+                    if (!publicMode() && !userSearch) restoreStock();
                     if (stockIsDefault && rowList.length && publicMode() && sig !== autoScannedFor) {
                         // A new list (another hero or search): a pause from the last one is over.
                         if (paused && autoScannedFor) paused = false;

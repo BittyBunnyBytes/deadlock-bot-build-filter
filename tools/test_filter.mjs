@@ -7,7 +7,8 @@ import vm from "node:vm";
 import assert from "node:assert/strict";
 
 const SRC = fs.readFileSync(new URL("../src/bot_build_filter.js", import.meta.url), "utf8")
-    .replace("var HERO_IDS = {}; /*@HERO_IDS@*/", 'var HERO_IDS = {"hero_inferno": 1, "hero_haze": 13};');
+    .replace("var HERO_IDS = {}; /*@HERO_IDS@*/", 'var HERO_IDS = {"hero_inferno": 1, "hero_haze": 13};')
+    .replace("var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/", 'var ABILITY_IMAGES = {"upgrade_toxic_bullets": "s2r://panorama/images/upgrades/mods_weapon/toxic_bullets_psd.vtex"};');
 let failures = 0;
 async function test(name, fn) {
     try { await fn(); console.log("ok   " + name); } catch (e) { failures++; console.log("FAIL " + name + "\n     " + (e.stack || e.message).split("\n").slice(0, 8).join("\n     ")); }
@@ -91,7 +92,12 @@ class P {
             this.AddClass("HeroBuildListItem");
             const area = new P("Panel", this, "BuildNameArea");
             const nameRow = new P("Panel", area, ""); nameRow.AddClass("nameRow");
-            new P("Panel", nameRow, "").AddClass("BuildTagContainer");
+            const tags = new P("Panel", nameRow, ""); tags.AddClass("BuildTagContainer");
+            for (let i = 1; i <= 3; i++) {
+                const t = new P("CitadelBuildTag", tags, "BuildTag" + i);
+                const img = new P("Image", t, "TagImage"); img.SetImage = (src) => { img.src = src; };
+                new P("Label", t, "TagLabel");
+            }
             const n = new P("Label", nameRow, ""); n.AddClass("BuildName");
             new P("CitadelButton", area, "");
             const right = new P("Panel", this, "RightPanel");
@@ -130,7 +136,7 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
     const details = new P("CitadelBuildDetails", main, "BuildDetails");
     details.actuallayoutwidth = 400;
     const mods = new P("CitadelShopModsBuild", details, "ShopModsBuild");
-    const favs = new Set();
+    const favs = new Set(db.filter((b) => b.fav0).map((b) => b.name));
     const fillList = (builds) => {
         list.RemoveAndDeleteChildren();
         builds.forEach((b) => {
@@ -145,7 +151,10 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
             row.build = b;
             if (b.name === activeName) row.AddClass("ActiveBuild");
             if (b.author === "0") row.AddClass("DefaultBuild");
+            if (b.mine) { row.AddClass("MyBuild"); row.RemoveClass("PublicBuild"); }
             if (favs.has(b.name)) row.AddClass("Favorite");
+            const tagBox = new P("Panel", row.children[0], ""); tagBox.AddClass("BuildTagContainer");
+            for (let i = 1; i <= 3; i++) { const tg = new P("CitadelBuildTag", tagBox, "BuildTag" + i); if (b.tags && b.tags[i - 1]) tg.vars.tag_name = b.tags[i - 1]; else tg.AddClass("Empty"); }
         });
     };
     const show = (b) => {
@@ -160,9 +169,11 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
         } });
     };
     const runSearch = () => {
+        selector.AddClass("BuildsLoading");
+        // Like the game: the request is built a couple of frames later, from what the box says then.
+        timers.push({ at: clock + 2 * FRAME, f: () => {
         const t = String(searchEntry.text || "").trim().toLowerCase();
         ev.searches.push(t); ev.searchTimes.push(clock);
-        selector.AddClass("BuildsLoading");
         timers.push({ at: clock + 0.3, f: () => {
             let res;
             if (!t) res = defaultList;
@@ -171,6 +182,7 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
             fillList(res);
             selector.RemoveClass("BuildsLoading");
         } });
+        } });
     };
     fillList(defaultList);
     const $ = {
@@ -178,7 +190,8 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
         Msg: (s) => ev.log.push(s),
         Schedule: (s, f) => timers.push({ at: clock + Math.max(s, FRAME), f }),
         Localize: (fmt, panel) => {
-            const tokens = { "#hero_haze": "Haze", "#hero_inferno": "Infernus", "#Citadel_HeroBuilds_DefaultHeroBuild": "Default {s:hero_name} Build", "#Citadel_HeroBuilds_BeginnerHeroBuild": "Beginner {s:hero_name} Build" };
+            const tokens = { "#hero_haze": "Haze", "#hero_inferno": "Infernus", "#Citadel_HeroBuilds_DefaultHeroBuild": "Default {s:hero_name} Build", "#Citadel_HeroBuilds_BeginnerHeroBuild": "Beginner {s:hero_name} Build",
+                "#upgrade_toxic_bullets": "Toxic Bullets", "#citadel_build_tag_spirit": "Spirit", "#citadel_build_tag_weapon": "Weapon" };
             if (fmt.charAt(0) === "#") fmt = tokens[fmt] || fmt;
             return fmt.replace(/\{[sdi]:([a-z_]+)\}/g, (m, n) => { const v = lookup(panel, n); return v === undefined ? m : String(v); });
         },
@@ -233,7 +246,14 @@ async function advance(seconds) {
     }
     clock = end;
 }
-const visible = (b) => b.list.children.filter((r) => r.style.visibility !== "collapse").map((r) => r.build.name);
+// What the stock stylesheet shows: Public tab = PublicBuild rows without HidePublic; My Builds = own,
+// favourited, active and default builds. An inline visibility style overrides both.
+const visible = (b) => b.list.children.filter((r) => {
+    if (r.style.visibility === "collapse") return false;
+    if (r.style.visibility === "visible") return true;
+    if (b.selector.BHasClass("ShowMyBuilds")) return ["ActiveBuild", "MyBuild", "DefaultBuild", "Favorite"].some((c) => r.classes.has(c));
+    return r.classes.has("PublicBuild") && !r.classes.has("HidePublic");
+}).map((r) => r.build.name);
 const ctl = (b) => b.tabs.children.find((c) => c.classes.has("BbfControl"));
 const labels = (b) => ctl(b).children.map((c) => c.text);
 function reset() { clock = 0; timers = []; }
@@ -431,7 +451,7 @@ await test("My Builds tab: our list hidden, nothing hidden, nothing previewed", 
     br.start();
     await advance(3);
     assert.equal(br.shown(), null);
-    assert.equal(visible(br).length, SAMPLES.length);
+    assert.deepEqual(visible(br), ["Default Haze Build"], "vanilla My Builds: own, favourited, active, default");
     assert.equal(br.ev.previews.length, 0);
 });
 
@@ -512,6 +532,67 @@ await test("snippets missing (old layout) -> falls back to filtering the game's 
     assert.ok(br.ev.log.some((l) => /snippets not found/.test(l)));
     assert.ok(!br.ev.log.some((l) => /TypeError/.test(l)), br.ev.log.filter((l) => /TypeError/.test(l))[0]);
     assert.deepEqual(visible(br), ["Haze bullet spam", "Spirit Haze (fun)", "Tank Haze", "Default Haze Build"]);
+});
+
+// ------------------------------------------------------------------ searches, My Builds, tags
+await test("load more: the search words actually reach the game network (not an empty box)", async () => {
+    reset();
+    const db = copy(SAMPLES).concat(bigDb(40, 100, "spirit"), bigDb(40, 300, "gun"));
+    const br = makeBrowser({ db, defaultList: copy(SAMPLES) });
+    br.start();
+    await advance(30);
+    const words = br.ev.searches.filter((x) => x);
+    assert.ok(words.includes("spirit") && words.includes("gun"), JSON.stringify(br.ev.searches));
+    assert.ok(br.shown().some((n) => /spirit build/.test(n)) && br.shown().some((n) => /gun build/.test(n)));
+    assert.equal(br.searchEntry.text, "", "the box is empty again");
+    assert.equal(br.shown() !== null, true, "our own text is not mistaken for a player search");
+});
+await test("My Builds after loading more: the normal list comes back with your own and favourited builds", async () => {
+    reset();
+    const mine = [
+        { key: "50|My Haze", author: "50", name: "My Haze", desc: "mine", annotations: [], mine: true },
+        { key: "51|Faved Haze", author: "51", name: "Faved Haze", desc: "faved", annotations: [], fav0: true }
+    ];
+    const def = copy(SAMPLES).concat(mine);
+    const db = def.concat(bigDb(40, 100, "spirit"));
+    const br = makeBrowser({ db, defaultList: def, activeName: "Haze bullet spam" });
+    br.start();
+    await advance(30);
+    assert.ok(!br.list.children.some((r) => r.build.name === "My Haze"), "the stock list holds search results now");
+    br.selector.RemoveClass("ShowPublicBuilds"); br.selector.AddClass("ShowMyBuilds");   // the player opens My Builds
+    await advance(3);
+    const v = visible(br);
+    for (const n of ["My Haze", "Faved Haze", "Haze bullet spam", "Default Haze Build"]) assert.ok(v.includes(n), n + " missing from My Builds: " + v);
+    assert.ok(!v.includes("Haze Meta Build"), "public builds do not leak into My Builds");
+});
+await test("in place: bot rows hidden with HidePublic only; My Builds unaffected", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "2" ? { ...b, fav0: true } : b));
+    const br = makeBrowser({ db, defaultList: db, src: IN_PLACE, rowsHaveDescription: true });
+    br.start();
+    await advance(6);
+    assert.ok(!visible(br).includes("Haze 58.3% WR"));
+    assert.ok(visible(br).includes("Haze Meta Build"), "a favourited build stays");
+    assert.ok(br.list.children.every((r) => !r.style.visibility), "no inline visibility on stock rows");
+    br.selector.RemoveClass("ShowPublicBuilds"); br.selector.AddClass("ShowMyBuilds");
+    await advance(2);
+    assert.deepEqual(visible(br), ["Haze Meta Build", "Default Haze Build"]);
+});
+await test("tags: our rows show the build's tags (standard, item, unknown -> name)", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "4" ? { ...b, tags: ["Spirit", "Toxic Bullets", "Something New"] } : b.author === "5" ? { ...b, tags: ["Weapon"] } : b));
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(8);
+    const row = br.ownRow("Haze bullet spam");
+    const t = [1, 2, 3].map((i) => row.FindChildTraverse("BuildTag" + i));
+    assert.deepEqual(t.map((x) => x.vars.tag_name), ["Spirit", "Toxic Bullets", "Something New"]);
+    assert.equal(t[0].FindChildTraverse("TagImage").src, "s2r://panorama/images/builds/citadel_build_tag_spirit.vsvg");
+    assert.equal(t[1].FindChildTraverse("TagImage").src, "s2r://panorama/images/upgrades/mods_weapon/toxic_bullets_psd.vtex");
+    assert.ok(t[2].classes.has("ShowLabel"), "unknown tag shows its name");
+    const row5 = br.ownRow("Spirit Haze (fun)");
+    assert.equal(row5.FindChildTraverse("BuildTag1").vars.tag_name, "Weapon");
+    assert.equal(row5.FindChildTraverse("BuildTag2").style.visibility, "collapse");
 });
 
 console.log(failures ? failures + " failed" : "all passed");

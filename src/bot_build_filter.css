@@ -16,11 +16,6 @@ CitadelHeroBuildsSelector .BbfList.BbfShown
 {
 	visibility: visible;
 }
-/* The stock rows' tag chips are filled in by the game; ours have no data for them. */
-CitadelHeroBuildsSelector .BbfList .BuildTagContainer
-{
-	visibility: collapse;
-}
 CitadelHeroBuildsSelector .BbfList .HeroBuildListItem.BbfUnchecked
 {
 	opacity: 0.8;

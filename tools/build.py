@@ -56,6 +56,29 @@ def hero_ids(game):
             if isinstance(v, dict) and isinstance(v.get("m_HeroID"), int) and v["m_HeroID"] > 0 and not v.get("m_bDisabled")}
 
 
+def ability_images(game):
+    """{ability/item key: s2r icon path} for build-tag icons, from scripts/abilities.vdata; only icons
+    that exist in the game's files are kept."""
+    import kv3
+    p = os.path.join(game, "pak01_dir.vpk")
+    idx = vpkread.index(p)
+    try:
+        root = kv3.plain(kv3.decode(dict(blocks(vpkread.read(p, "scripts/abilities.vdata_c", idx)))[b"DATA"])[0])
+    except Exception as e:  # noqa: BLE001
+        print("ability images unavailable:", e)
+        return {}
+    out = {}
+    for key, v in root.items():
+        src = v.get("m_strAbilityImage") if isinstance(v, dict) else None
+        if not isinstance(src, str) or not src.startswith("file://{images}/") or key.endswith("_base"):
+            continue
+        rel, ext = os.path.splitext(src[len("file://{images}/"):])
+        compiled = rel + (".vsvg" if ext == ".svg" else "_%s.vtex" % ext[1:])
+        if "panorama/images/" + compiled + "_c" in idx[0]:
+            out[key] = "s2r://panorama/images/" + compiled
+    return out
+
+
 def inject(xml, snippets):
     """Add our stylesheets, snippets and script to a build-browser layout (stock or Build Gem's)."""
     if INCLUDE in xml:
@@ -176,6 +199,12 @@ def main():
         sys.exit("HERO_IDS marker missing in bot_build_filter.js")
     js = js.replace(marker, "var HERO_IDS = " + json.dumps(heroes, sort_keys=True) + ";")
     print("hero ids:", len(heroes))
+    images = ability_images(game)
+    marker = "var ABILITY_IMAGES = {}; /*@ABILITY_IMAGES@*/"
+    if marker not in js:
+        sys.exit("ABILITY_IMAGES marker missing in bot_build_filter.js")
+    js = js.replace(marker, "var ABILITY_IMAGES = " + json.dumps(images, sort_keys=True, separators=(",", ":")) + ";")
+    print("tag icons:", len(images))
     common = {SCRIPT_PATH: script_resource(js, red_script), STYLE_PATH: layout_resource(src("bot_build_filter.css"), red_style)}
     snippets = src("snippets.xml")
     os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)
