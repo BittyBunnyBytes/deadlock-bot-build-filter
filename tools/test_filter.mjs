@@ -123,7 +123,7 @@ const RECORDS = { 4: [30, 52], 5: [1, 9], 7: [12, 20] };
 // the hero's most favourited builds the fake API knows: [author, name, favourites, weekly]
 const FAVS = [["4", "Haze bullet spam", 48213, 120], ["7", "Tank Haze", 1234, 3], ["1", "Haze 58.3% WR", 900, 0]];
 function fnv(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return ("0000000" + h.toString(16)).slice(-8); }
-function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName = null, src = SRC, emptyAnswers = false, webView = "ok" }) {
+function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName = null, src = SRC, emptyAnswers = false, webView = "ok", apiLatency = 0 }) {
     db.forEach((b, i) => { b.id = b.id || 1000 + i; });
     const ev = { log: [], previews: [], activated: [], used: [], favs: [], searches: [], searchTimes: [], statReqs: [] };
     const handlers = [];
@@ -218,14 +218,19 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
                 const cmd = JSON.parse(decodeURIComponent(url.slice(url.indexOf("#") + 1)));
                 ev.statReqs.push({ at: clock, n: cmd.ids ? cmd.ids.length : cmd.authors ? cmd.authors.length : 0, cmd: cmd.cmd || "stats", hero: cmd.hero, page: url.split("#")[0] });
                 const fire = (name, arg) => handlers.filter((h) => h.panel === p && h.name === name).forEach((h) => h.fn(p, arg));
-                timers.push({ at: clock + 0.4, f: () => {
+                const cmdPeek = JSON.parse(decodeURIComponent(url.slice(url.indexOf("#") + 1)));
+                timers.push({ at: clock + 0.4 + (cmdPeek.cmd === "builds" ? cmdPeek.authors.length * apiLatency : 0), f: () => {
                     if (webView === "blocked") return fire("HTMLURLChanged", "http://error/");
                     if (webView === "silent") return;
                     let body;
                     if (cmd.cmd === "load") body = STORE.bbf_settings || "";
                     else if (cmd.cmd === "save") { STORE.bbf_settings = JSON.stringify(cmd.settings); body = "saved"; }
-                    else if (cmd.cmd === "builds") body = JSON.stringify(db.filter((b) => cmd.authors.includes(b.author) && !b.apiMissing)
-                        .map((b) => { const f = FAVS.find((x) => x[0] === b.author && x[1] === b.name); return [b.author, b.name, b.id, typeof b.apiFav === "number" ? b.apiFav : f ? f[2] : 7, f ? f[3] : 0, b.desc || "", b.annotations || [], b.cats || "", b.updated || 0]; }));
+                    else if (cmd.cmd === "builds") {
+                        ev.apiAuthors = (ev.apiAuthors || []).concat(cmd.authors);
+                        body = JSON.stringify(db.filter((b) => cmd.authors.includes(b.author) && !b.apiMissing && !b.apiFails)
+                            .map((b) => { const f = FAVS.find((x) => x[0] === b.author && x[1] === b.name); return [b.author, b.apiName || b.name, b.id, typeof b.apiFav === "number" ? b.apiFav : f ? f[2] : 7, f ? f[3] : 0, b.desc || "", b.annotations || [], b.cats || "", b.updated || 0]; })
+                            .concat(db.filter((b) => cmd.authors.includes(b.author) && b.apiFails).map((b) => ["!", b.author])));
+                    }
                     else if (cmd.cmd === "favs") body = "min:" + Math.min(...FAVS.map((f) => f[2])) + "," + FAVS.map((f) => f[0] + ":" + fnv(f[1]) + ":" + f[2] + ":" + f[3]).join(",") + "," + "x".repeat(0);
                     else body = cmd.ids.filter((id) => RECORDS[id] && cmd.hero === 13).map((id) => id + ":" + RECORDS[id][0] + ":" + RECORDS[id][1]).join(",");
                     // like the page: chunks of at most 40 characters here (3500 there), arriving out of order
@@ -860,6 +865,75 @@ await test("settings: with loading on scroll off, scrolling does not search", as
     br.own().children.find((r) => r.classes.has("BbfMore")).events.onactivate();
     await advance(8);
     assert.ok(br.ev.searches.filter((x) => x).length >= 1, "a click still loads");
+});
+
+// ------------------------------------------------------------------ regressions from the bug-fix pass
+await test("bugfix: a build clicked in the game's list still gets its texts from the API (no pane reading)", async () => {
+    reset();
+    const db = copy(SAMPLES);
+    const br = makeBrowser({ db, defaultList: db, src: IN_PLACE_API });
+    // the player clicks "Haze vs melee" right away (its bot notes are only known to the API)
+    br.show(db.find((b) => b.name === "Haze vs melee"));
+    br.start();
+    await advance(10);
+    assert.ok(!visible(br).includes("Haze vs melee"), "flagged from the API's notes");
+    assert.ok((br.ev.apiAuthors || []).includes("6"));
+    assert.deepEqual(br.ev.previews, []);
+});
+await test("bugfix: a bot farm's identical '+WR' notes across accounts still count", async () => {
+    reset();
+    const farm = [10, 11, 12, 13].map((a) => ({ key: a + "|Haze build " + a, author: String(a), name: "Haze build " + a, desc: "", annotations: ["+WR 3.1%", "+WR 2.4%"] }));
+    const db = copy(SAMPLES.filter((b) => HUMANS.includes(b.name))).concat(farm);
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(10);
+    for (const f of farm) assert.ok(!br.shown().includes(f.name), f.name);
+});
+await test("bugfix: common notes like 'Core' on many builds still make them Annotated", async () => {
+    reset();
+    const db = [1, 2, 3, 4].map((a) => ({ key: (40 + a) + "|Plain " + a, author: String(40 + a), name: "Plain " + a, desc: "x", annotations: ["Core"] }))
+        .concat(copy(SAMPLES.filter((b) => b.author === "0")));   // the game's list always ends with Valve's build (tells the hero)
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(10);
+    const chips = [1, 2, 3].map((i) => br.ownRow("Plain 1").FindChildTraverse("BuildTag" + i)).filter((c) => c.style.visibility === "visible");
+    assert.deepEqual(chips.map((c) => c.FindChildTraverse("TagLabel").text), ["Annotated"]);
+});
+await test("bugfix: an author the API fails on is asked at most twice", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "4" ? { ...b, apiFails: true } : b));
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(60);
+    assert.equal((br.ev.apiAuthors || []).filter((a) => a === "4").length, 2);
+});
+await test("bugfix: a slow 40-author batch is not treated as a failure", async () => {
+    reset();
+    const db = copy(SAMPLES).concat(bigDb(45, 100, "spirit"));
+    const br = makeBrowser({ db, defaultList: db, apiLatency: 0.5 });   // 40 authors -> 20 s
+    br.start();
+    await advance(60);
+    assert.ok(!br.ev.log.some((l) => /no answer/.test(l)), br.ev.log.filter((l) => /no answer/.test(l))[0]);
+    assert.ok(br.ev.log.some((l) => /build texts: \d+ builds from 40 authors/.test(l)));
+});
+await test("bugfix: names that differ in spacing or case still match the API's copy", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "6" ? { ...b, apiName: "  HAZE VS  MELEE " } : b));
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(10);
+    assert.ok(!br.shown().includes("Haze vs melee"), "its API notes were matched to the row");
+});
+await test("bugfix: in the game's own list, Check previews only the builds it counts", async () => {
+    reset();
+    const db = copy(SAMPLES).map((b) => (b.author === "5" ? { ...b, apiMissing: true } : b));
+    const br = makeBrowser({ db, defaultList: db, src: IN_PLACE_API });
+    br.start();
+    await advance(10);
+    assert.match(part(br, "BbfStatus").text, /Check 1 in detail/);
+    part(br, "BbfStatus").events.onactivate();
+    await advance(5);
+    assert.deepEqual(br.ev.previews, ["Spirit Haze (fun)"]);
 });
 
 console.log(failures ? failures + " failed" : "all passed");

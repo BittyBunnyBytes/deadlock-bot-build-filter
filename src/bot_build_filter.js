@@ -307,12 +307,13 @@
     }
     function keep(key, value) { try { memoryPanel.SetAttributeString(key, JSON.stringify(value)); } catch (e) {} }
     var state = recall("bbf2_state", { on: true });
-    var known = recall("bbf2_known", {});        // "author|name" -> { author, desc, annotations, id }
-    var botAuthors = recall("bbf2_bot_authors", {});
+    // v3: older copies hold builds "read" from the details pane, whose item notes the game never exposes.
+    var known = recall("bbf3_known", {});        // "author|name" -> { author, desc, annotations, id, cats, fav, wfav, updated, src }
+    var botAuthors = recall("bbf3_bot_authors", {});
     function saveKnown() {
         var keys = Object.keys(known);
         if (keys.length > 2500) keys.slice(0, keys.length - 2500).forEach(function (k) { delete known[k]; });
-        keep("bbf2_known", known);
+        keep("bbf3_known", known);
     }
 
     // ------------------------------------------------------------------ state of this popup
@@ -430,6 +431,7 @@
     // Whatever the details pane shows (picked by the player in the stock list) is remembered against its row.
     var lastDetailsId = -1;
     function learnFromDetails(rowList) {
+        if (!CONFIG.previewChecks) return;   // texts come from deadlock-api.com; reading the pane costs a frame
         var id = detailsId();
         if (!id || id === lastDetailsId || busy) return;
         var name = detailsName(), match = null;
@@ -451,20 +453,28 @@
     // reused panel, or a game-wide value): it is ignored.
     var sharedCache = null;
     var version = 0;             // bumps whenever anything that can change a verdict changes
+    // Only notes read from panels are suspect; deadlock-api.com's notes are each build's own (and the same
+    // "+WR 3%" on many accounts is exactly what a bot farm looks like).
     function sharedNotes() {
         if (sharedCache) return sharedCache;
         var by = {}, out = {};
         Object.keys(known).forEach(function (k) {
             var e = known[k];
+            if (e.src === "api") return;
             (e.annotations || []).forEach(function (a) { (by[a] = by[a] || {})[e.author || k.split("|")[0]] = true; });
         });
         Object.keys(by).forEach(function (a) { if (Object.keys(by[a]).length >= 3) out[a] = true; });
         return (sharedCache = out);
     }
+    function ownNotes(k) {
+        if (!k || !k.annotations) return [];
+        if (k.src === "api") return k.annotations;
+        var shared = sharedNotes();
+        return k.annotations.filter(function (a) { return !shared[a]; });
+    }
     function inputOf(key, author, name) {
-        var k = known[key] || {}, shared = sharedNotes();
-        return { key: key, author: author, name: name, desc: k.desc || "",
-                 annotations: (k.annotations || []).filter(function (a) { return !shared[a]; }) };
+        var k = known[key] || {};
+        return { key: key, author: author, name: name, desc: k.desc || "", annotations: ownNotes(k) };
     }
     // Rows worth previewing: unread, and not already settled as bot builds by their list text or account.
     function worthReading(r) {
@@ -479,13 +489,12 @@
             var v = result[b.key];
             if (v && v.bot && v.own >= CONFIG.threshold && b.author && b.author !== "0" && !botAuthors[b.author]) { botAuthors[b.author] = b.name; changed = true; }
         });
-        if (changed) { keep("bbf2_bot_authors", botAuthors); version++; }
+        if (changed) { keep("bbf3_bot_authors", botAuthors); version++; }
     }
     function ownTagsOf(key, author, name) {
         var k = known[key];
         if (!k || k.annotations === null || author === "0") return null;
-        var shared = sharedNotes();
-        return styleTags({ name: name, desc: k.desc, cats: k.cats, annotations: (k.annotations || []).filter(function (a) { return !shared[a]; }) });
+        return styleTags({ name: name, desc: k.desc, cats: k.cats, annotations: ownNotes(k) });
     }
     // The tag filter picked in the tag picker (kept on the root panel, which the picker popup shares).
     var rootPanel = null;
@@ -680,7 +689,7 @@
     statusLabel.SetPanelEvent("onactivate", function () {
         if (busy) { pause("paused from the control"); return; }
         if (paused) { paused = false; stopWork = false; render(); return; }
-        if (listOn()) previewCheck(); else scanStock(true);
+        if (listOn()) previewCheck(); else scanStock(false);
     });
     tooltip(toggleLabel, "Bot Build Filter: takes public builds generated from win rates out of the list (they plug a website, share a templated description, and annotate items with \"+WR x%\") and loads more human builds as you scroll.<br>Click to switch to the game's own list with suspected builds tagged BOT?.");
     tooltip(statusLabel, "Build texts come from deadlock-api.com in the background. Builds it does not have yet can be checked here: each is previewed once in the details pane (your active build is not changed). Clicking any build pauses this.");
@@ -921,7 +930,7 @@
         var rowList = rows();
         learnFromDetails(rowList);
         // Nothing to redo when the same rows are showing and nothing that decides a verdict changed.
-        var sig = version + "|" + state.on + "|" + publicMode() + "|" + rowList.map(function (r) { return r.key + (r.panel.BHasClass("ActiveBuild") ? "*" : "") + (r.panel.BHasClass("Favorite") ? "+" : ""); }).join("\n");
+        var sig = version + "|" + state.on + "|" + publicMode() + "|" + listOn() + "|" + rowList.map(function (r) { return r.key + (r.panel.BHasClass("ActiveBuild") ? "*" : "") + (r.panel.BHasClass("Favorite") ? "+" : ""); }).join("\n");
         if (sig === applySig) return rowList;
         applySig = sig;
         lastResult = verdicts(rowList);
@@ -933,6 +942,8 @@
                 flaggedCount++;
                 if (state.on && publicMode() && !r.panel.BHasClass("ActiveBuild") && !r.panel.BHasClass("Favorite")) hiddenCount++;
             }
+            // While our list covers the stock one, its rows need no tags or labels.
+            if (listOn()) return;
             markRow(r, v);
             if (r.author !== "0") statsLabels({}, r.panel, r.author, r.name, byClass(r.panel, "nameRow") || r.panel, null);
         });
@@ -941,7 +952,7 @@
     // Check the rows of the stock list as it is, then put back the build the player was looking at.
     async function scanStock(all) {
         if (busy || !publicMode() || loading()) return;
-        var todo = rows().filter(function (r) { return r.author !== "0" && (all || worthReading(r)); }).slice(0, CONFIG.scanMaxRows);
+        var todo = rows().filter(function (r) { return r.author !== "0" && (all || worthReading(r)) && (CONFIG.previewChecks || all || apiAsked[r.author]); }).slice(0, CONFIG.scanMaxRows);
         if (!todo.length) { apply(); return; }
         busy = true; stopWork = false; paused = false;
         var startId = detailsId();
@@ -999,6 +1010,8 @@
     var stats = { heroId: 0, heroName: "", data: {}, state: "off", note: "", req: 0, cur: null, parts: null, sentAt: 0, nextAt: 0, fails: 0, view: null };
     var favs = { data: null, min: -1, tried: 0 };   // "author|namehash" -> [favourites, weekly]
     var apiAsked = {};           // authors whose builds for this hero were asked of deadlock-api.com (this session)
+    var apiFails = {};           // failed asks per author
+    function normName(n) { return String(n || "").replace(/\s+/g, " ").trim().toLowerCase(); }
     function heroFromDefaultName(name) {
         if (!name) return null;
         var probe = $.CreatePanel("Panel", popup, ""), hit = null;
@@ -1082,17 +1095,22 @@
         } else if (cmd.cmd === "save") {
             // nothing to do
         } else if (cmd.cmd === "builds") {
-            var got = 0, failed = {};
+            var got = 0, failed = {}, byNorm = {};
+            // The game's spelling of a build's name wins (trailing spaces or case can differ).
+            (pool ? pool.entries : []).concat(rows()).forEach(function (e) { byNorm[e.author + "|" + normName(e.name)] = e.key; });
             JSON.parse(body || "[]").forEach(function (b) {
                 if (b[0] === "!") { failed[b[1]] = true; return; }
-                var key = keyOf(b[0], b[1]);
-                // The API's copy of the build stands in for a preview (unless a preview already read it).
-                if (!known[key] || known[key].src === "api" || known[key].annotations === null) {
-                    known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], updated: b[8] || 0, src: "api" };
-                    got++;
-                }
+                var key = byNorm[b[0] + "|" + normName(b[1])] || keyOf(b[0], b[1]);
+                // The API's copy is the build's own text; it replaces anything read from the details pane.
+                known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], updated: b[8] || 0, src: "api" };
+                got++;
             });
-            cmd.authors.forEach(function (a) { if (!failed[a]) apiAsked[a] = true; });
+            // An author the API failed on is asked again once, then left (no endless retries).
+            cmd.authors.forEach(function (a) {
+                if (!failed[a]) { apiAsked[a] = true; return; }
+                apiFails[a] = (apiFails[a] || 0) + 1;
+                if (apiFails[a] >= 2) apiAsked[a] = true;
+            });
             keep("bbf3_api_asked_" + stats.heroId, apiAsked);
             sharedCache = null;
             saveKnown();
@@ -1132,7 +1150,9 @@
     var statsAuthorsVersion = -1, statsWant = [];
     function statsTick(authorsOf) {
         if (stats.state === "off") startStats();
-        if (stats.state === "waiting" && now() - stats.sentAt > SC.timeoutSeconds) statsFailed("no answer from deadlock-api.com");
+        // A batch of authors' builds takes longer (several API calls); chunks arriving reset the clock.
+        var limit = stats.cur && stats.cur.cmd === "builds" ? SC.timeoutSeconds + stats.cur.authors.length : SC.timeoutSeconds;
+        if (stats.state === "waiting" && now() - stats.sentAt > limit) statsFailed("no answer from deadlock-api.com");
         if (stats.state !== "ready" || now() < stats.nextAt) return;
         // Saved settings first (once), a pending save, then build texts, then authors' records.
         if (!settingsState.tried) { settingsState.tried = true; send({ cmd: "load" }); return; }
@@ -1404,9 +1424,9 @@
             await verifyCurrent("Checking");
             addRows(rows(), true);
             savePool();
-            var checked = pool.entries.filter(function (e) { return known[e.key] && known[e.key].annotations !== null; });
-            log("checked " + checked.length + " builds; item notes found on " + checked.filter(function (e) { return known[e.key].annotations.length; }).length +
-                ", L>R on " + checked.filter(function (e) { var t = ownTagsOf(e.key, e.author, e.name); return t && t.ordered; }).length);
+            var withText = pool.entries.filter(function (e) { return known[e.key] && known[e.key].annotations !== null; });
+            log("list opened: " + pool.entries.length + " builds, texts known for " + withText.length + " (item notes on " +
+                withText.filter(function (e) { return known[e.key].annotations.length; }).length + ")");
         } catch (e) { log("verify: " + e); pause("an error while checking"); }
         finally { busy = false; progress = ""; render(); }
         if (!paused && !(pool && pool.dry) && shownEntries().length < CONFIG.minRows) fillWhenReady();
