@@ -1,3 +1,4 @@
-<!-- Bot Build Filter: optional self-hosted copy of the built-in author-record page.
-     Host it anywhere over https and put its address in CONFIG.stats.relayUrl. -->
+<!-- Bot Build Filter: the author-record lookup page, served by this repo's GitHub Pages.
+     The mod opens it in a hidden game web view with "#<request>" and reads the answer from the title.
+     To use your own copy, host this file over https and set CONFIG.stats.relayUrl. -->
 <!doctype html><meta charset="utf-8"><title>BBF</title><script>(function(){function t(s){document.title=s}function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}var u="https://api.deadlock-api.com/v1/players/hero-stats?account_ids="+P.ids.join(",")+"&hero_ids="+P.hero;fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}).then(function(a){var o=[];for(var i=0;i<a.length;i++){var x=a[i];if(x.hero_id==P.hero)o.push(x.account_id+":"+(x.wins|0)+":"+(x.matches_played|0))}t("BBF1|"+P.r+"|ok|"+o.join(","))}).catch(function(e){t("BBF1|"+P.r+"|err|"+((e&&e.message)||e))})}window.addEventListener("hashchange",run);run()})()</script>
