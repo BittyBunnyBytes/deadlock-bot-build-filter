@@ -123,7 +123,7 @@ const RECORDS = { 4: [30, 52], 5: [1, 9], 7: [12, 20] };
 // the hero's most favourited builds the fake API knows: [author, name, favourites, weekly]
 const FAVS = [["4", "Haze bullet spam", 48213, 120], ["7", "Tank Haze", 1234, 3], ["1", "Haze 58.3% WR", 900, 0]];
 function fnv(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return ("0000000" + h.toString(16)).slice(-8); }
-function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName = null, src = SRC, emptyAnswers = false, webView = "ok", apiLatency = 0 }) {
+function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName = null, src = SRC, emptyAnswers = false, webView = "ok", apiLatency = 0, rateLimited = 0 }) {
     db.forEach((b, i) => { b.id = b.id || 1000 + i; });
     const ev = { log: [], previews: [], activated: [], used: [], favs: [], searches: [], searchTimes: [], statReqs: [] };
     const handlers = [];
@@ -216,15 +216,22 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
             const p = new P(type, parent, id);
             if (type === "CitadelHTMLPanel") p.SetURL = (url) => {
                 const cmd = JSON.parse(decodeURIComponent(url.slice(url.indexOf("#") + 1)));
-                ev.statReqs.push({ at: clock, n: cmd.ids ? cmd.ids.length : cmd.authors ? cmd.authors.length : 0, cmd: cmd.cmd || "stats", hero: cmd.hero, page: url.split("#")[0] });
+                ev.statReqs.push({ at: clock, n: cmd.ids ? cmd.ids.length : cmd.authors ? cmd.authors.length : 0, cmd: cmd.cmd || "stats", hero: cmd.hero, ttl: cmd.ttl, sort: cmd.sort, page: url.split("#")[0] });
                 const fire = (name, arg) => handlers.filter((h) => h.panel === p && h.name === name).forEach((h) => h.fn(p, arg));
                 const cmdPeek = JSON.parse(decodeURIComponent(url.slice(url.indexOf("#") + 1)));
                 timers.push({ at: clock + 0.4 + (cmdPeek.cmd === "builds" ? cmdPeek.authors.length * apiLatency : 0), f: () => {
                     if (webView === "blocked") return fire("HTMLURLChanged", "http://error/");
                     if (webView === "silent") return;
+                    if (rateLimited && cmd.cmd !== "load" && cmd.cmd !== "save") { rateLimited--; return fire("HTMLTitle", "BBF1|" + cmd.r + "|err|RATE 30"); }
                     let body;
                     if (cmd.cmd === "load") body = STORE.bbf_settings || "";
                     else if (cmd.cmd === "save") { STORE.bbf_settings = JSON.stringify(cmd.settings); body = "saved"; }
+                    else if (cmd.cmd === "clear") { ev.cleared = (ev.cleared || 0) + 1; body = "cleared"; }
+                    else if (cmd.cmd === "top") {
+                        const val = (b) => { const f = FAVS.find((x) => x[0] === b.author && x[1] === b.name); return typeof b.apiFav === "number" ? b.apiFav : f ? f[2] : 7; };
+                        body = JSON.stringify(db.filter((b) => b.author !== "0" && !b.apiMissing).slice().sort((x, y) => val(y) - val(x)).slice(0, cmd.limit)
+                            .map((b) => [b.author, b.name, b.id, val(b), 0, b.desc || "", b.annotations || [], b.cats || "", b.updated || 0]));
+                    }
                     else if (cmd.cmd === "builds") {
                         ev.apiAuthors = (ev.apiAuthors || []).concat(cmd.authors);
                         body = JSON.stringify(db.filter((b) => cmd.authors.includes(b.author) && !b.apiMissing && !b.apiFails)
@@ -536,19 +543,21 @@ await test("records: a web view that cannot open the page gives up after 3 tries
     br.start();
     await advance(240);
     assert.equal(br.ev.statReqs.length, 3, "gives up after three failed requests");
-    assert.ok(br.ev.log.some((l) => /author records: the web view could not open/.test(l)));
+    assert.ok(br.ev.log.some((l) => /lookup \(the web view could not open/.test(l)));
     assert.ok(br.shown().includes("Haze bullet spam"));
     assert.equal(recText(br.ownRow("Haze bullet spam")), null);
 });
-await test("records: no answer at all times out and retries with growing waits", async () => {
+await test("records: no answer at all times out and keeps retrying with growing waits", async () => {
     reset();
     const db = copy(SAMPLES);
     const br = makeBrowser({ db, defaultList: db, webView: "silent" });
     br.start();
     await advance(400);
     const t = br.ev.statReqs.map((r) => r.at);
-    assert.equal(t.length, 3);
+    // a silent page is slow, not broken: it keeps being asked, ever less often (at most every 2 min + timeout)
+    assert.ok(t.length >= 3 && t.length <= 6, "requests " + t.length);
     assert.ok(t[2] - t[1] > t[1] - t[0]);
+    for (let i = 1; i < t.length; i++) assert.ok(t[i] - t[i - 1] >= 30, "spacing " + (t[i] - t[i - 1]));
 });
 
 await test("snippets missing (old layout) -> falls back to filtering the game's list, no errors", async () => {
@@ -934,6 +943,171 @@ await test("bugfix: in the game's own list, Check previews only the builds it co
     part(br, "BbfStatus").events.onactivate();
     await advance(5);
     assert.deepEqual(br.ev.previews, ["Spirit Haze (fun)"]);
+});
+
+
+// ------------------------------------------------------------------ sorted search, saved lookups, deadlock-api rate limits
+const extraDb = () => copy(SAMPLES).concat([
+    { key: "21|Haze top pick", author: "21", name: "Haze top pick", desc: "my favourite way to play", annotations: ["core"], apiFav: 99999 },
+    { key: "22|Haze runner up", author: "22", name: "Haze runner up", desc: "gun haze", annotations: [], apiFav: 50000 }
+]);
+await test("sort: picking a favourites sort searches deadlock-api once and lists the top builds first", async () => {
+    reset();
+    const db = extraDb();
+    const br = makeBrowser({ db, defaultList: copy(SAMPLES) });
+    br.start();
+    await advance(10);
+    assert.ok(!br.shown().includes("Haze top pick"));
+    part(br, "BbfCog").events.onactivate();
+    choose(br, "Order the list by", "Most favourited");
+    await advance(8);
+    const tops = br.ev.statReqs.filter((r) => r.cmd === "top");
+    assert.equal(tops.length, 1);
+    assert.equal(tops[0].sort, "favorites");
+    assert.equal(tops[0].ttl, 6 * 3600, "favourites keep-time from the settings");
+    assert.deepEqual(order(br).slice(0, 3), ["Haze top pick", "Haze runner up", "Haze bullet spam"]);
+    assert.ok(!order(br).some((n) => /WR|Meta|Best Haze/.test(n)), "bots from the sorted search stay hidden");
+    choose(br, "Order the list by", "Most played");   // same pool (most favourited): no new search
+    await advance(8);
+    assert.equal(br.ev.statReqs.filter((r) => r.cmd === "top").length, 1);
+    choose(br, "Order the list by", "Trending");
+    await advance(8);
+    assert.deepEqual(br.ev.statReqs.filter((r) => r.cmd === "top").map((r) => r.sort), ["favorites", "weekly_favorites"]);
+});
+await test("rate limit: a 'slow down' answer waits it out, never switches the lookups off, records still arrive", async () => {
+    reset();
+    const db = copy(SAMPLES);
+    const br = makeBrowser({ db, defaultList: db, rateLimited: 2 });
+    br.start();
+    await advance(120);
+    const t = br.ev.statReqs.filter((r) => r.cmd !== "load" && r.cmd !== "save").map((r) => r.at);
+    assert.ok(t.length >= 3);
+    assert.ok(t[1] - t[0] >= 30 && t[2] - t[1] >= 30, "waited as told: " + t.map((x) => x.toFixed(1)).join(", "));
+    assert.ok(br.ev.log.some((l) => /asked to slow down, waiting 30s/.test(l)));
+    assert.ok(!br.ev.log.some((l) => /trying again later/.test(l)), "not counted as a failure");
+    assert.equal(recText(br.ownRow("Haze bullet spam")), "30W 22L");
+});
+await test("saved lookups: keep-times go with every request; Clear now forgets them and asks again", async () => {
+    reset();
+    const db = copy(SAMPLES);
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(20);
+    assert.ok(br.ev.statReqs.filter((r) => r.cmd === "stats").every((r) => r.ttl === 86400));
+    assert.ok(br.ev.statReqs.filter((r) => r.cmd === "builds").every((r) => r.ttl === 21600));
+    part(br, "BbfCog").events.onactivate();
+    choose(br, "Keep authors' records for", "1 hour");
+    choose(br, "Keep favourites and build texts for", "a day");
+    const before = br.ev.statReqs.length;
+    setting(br, "Saved lookups").FindChildrenWithClassTraverse("BbfChoice")[0].events.onactivate();
+    await advance(20);
+    const after = br.ev.statReqs.slice(before);
+    assert.equal(br.ev.cleared, 1);
+    assert.ok(after.some((r) => r.cmd === "stats" && r.ttl === 3600), JSON.stringify(after));
+    assert.ok(after.some((r) => r.cmd === "builds" && r.ttl === 86400));
+    assert.equal(recText(br.ownRow("Haze bullet spam")), "30W 22L");
+    assert.ok(JSON.parse(STORE.bbf_settings).recCacheHours === 1, "keep-times are saved settings");
+});
+
+// ------------------------------------------------------------------ the lookup page itself, against a fake deadlock-api
+const PAGE_JS = (() => {
+    const html = eval(SRC.match(/var STATS_PAGE = ([\s\S]*?);\n/)[1]);
+    return html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+})();
+const resp = (status, body, headers = {}) => ({ ok: status < 300, status, headers: { get: (k) => headers[k] ?? null }, json: async () => body });
+function page(handler, store = new Map()) {
+    const calls = [], titles = []; let off = 0, onHash = null, inFlight = 0;
+    const ls = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k), key: (i) => [...store.keys()][i] ?? null, get length() { return store.size; } };
+    const env = { calls, store, maxInFlight: 0, skip: (sec) => { off += sec; } };
+    const ctx = { localStorage: ls, document: { set title(t) { titles.push(t); } }, location: { hash: "" }, window: { addEventListener: (e, f) => { onHash = f; } },
+        fetch: async (u) => { calls.push(u); inFlight++; env.maxInFlight = Math.max(env.maxInFlight, inFlight); try { return await handler(u); } finally { inFlight--; } },
+        setTimeout, Promise, JSON, Math, Number, String, Object, Error, Date: { now: () => Date.now() + off * 1000 } };
+    vm.runInNewContext(PAGE_JS, ctx);
+    let r = 0;
+    env.ask = async (cmd) => {
+        titles.length = 0; cmd.r = ++r;
+        ctx.location.hash = "#" + encodeURIComponent(JSON.stringify(cmd)); onHash();
+        for (let i = 0; i < 500 && !titles.length; i++) await new Promise((res) => setTimeout(res, 5));
+        const m = /^BBF1\|\d+\|(ok|err)\|([\s\S]*)$/.exec(titles[0] || "");
+        return m ? { kind: m[1], body: m[2] } : { kind: "none" };
+    };
+    return env;
+}
+const heroStats = (u) => resp(200, (new URL(u).searchParams.get("account_ids") || "").split(",").filter((id) => id !== "9").map((id) => ({ account_id: Number(id), hero_id: 13, wins: Number(id) * 2, matches_played: Number(id) * 3 })));
+await test("page: records are saved and reused for the keep-time, sorted ids, only missing ones asked", async () => {
+    const p = page(heroStats);
+    assert.deepEqual(await p.ask({ cmd: "stats", ids: ["5", "4"], hero: 13, ttl: 3600 }), { kind: "ok", body: "5:10:15,4:8:12" });
+    assert.match(p.calls[0], /account_ids=4,5&hero_ids=13/);
+    assert.deepEqual(await p.ask({ cmd: "stats", ids: ["4", "5"], hero: 13, ttl: 3600 }), { kind: "ok", body: "4:8:12,5:10:15" });
+    assert.equal(p.calls.length, 1, "second ask answered from storage");
+    await p.ask({ cmd: "stats", ids: ["4", "9"], hero: 13, ttl: 3600 });
+    assert.match(p.calls[1], /account_ids=9&/, "only the missing id");
+    await p.ask({ cmd: "stats", ids: ["4", "9"], hero: 13, ttl: 3600 });
+    assert.equal(p.calls.length, 2, "no games on the hero is remembered too");
+    p.skip(3601);
+    await p.ask({ cmd: "stats", ids: ["4"], hero: 13, ttl: 3600 });
+    assert.equal(p.calls.length, 3, "asked again once older than the keep-time");
+    const q = page(heroStats, p.store);   // a new game session: same web storage
+    await q.ask({ cmd: "stats", ids: ["4", "5"], hero: 13, ttl: 86400 });
+    assert.equal(q.calls.length, 0, "kept across game sessions");
+});
+await test("page: 429/503 waits Retry-After (also in the next session); 504 is not retried for a while", async () => {
+    let mode = 429;
+    const handler = (u) => (mode ? resp(mode, null, { "Retry-After": "30" }) : heroStats(u));
+    const p = page(handler);
+    assert.deepEqual(await p.ask({ cmd: "stats", ids: ["4"], hero: 13 }), { kind: "err", body: "RATE 30" });
+    mode = 0;
+    const again = await p.ask({ cmd: "stats", ids: ["4"], hero: 13 });
+    assert.equal(again.kind, "err"); assert.match(again.body, /^RATE (29|30)$/);
+    assert.equal(p.calls.length, 1, "nothing sent while waiting");
+    assert.equal((await page(handler, p.store).ask({ cmd: "stats", ids: ["4"], hero: 13 })).kind, "err", "a new session waits too");
+    p.skip(31);
+    assert.equal((await p.ask({ cmd: "stats", ids: ["4"], hero: 13 })).kind, "ok");
+    mode = 504;
+    assert.deepEqual(await p.ask({ cmd: "stats", ids: ["7"], hero: 13 }), { kind: "err", body: "HTTP 504" });
+    const n = p.calls.length;
+    assert.match((await p.ask({ cmd: "stats", ids: ["7"], hero: 13 })).body, /not asked again/);
+    assert.equal(p.calls.length, n, "the timed-out URL is not sent again");
+    mode = 0;
+    assert.equal((await p.ask({ cmd: "stats", ids: ["8"], hero: 13 })).kind, "ok", "other requests still go");
+    mode = 503;
+    assert.match((await p.ask({ cmd: "favs", hero: 13, limit: 400 })).body, /^RATE 30$/, "503 load shedding too");
+});
+await test("page: builds at most 2 requests at once, saved per author, a rate limit keeps what was fetched", async () => {
+    let limited = "";
+    const build = (a) => ({ num_favorites: 5, num_weekly_favorites: 1, hero_build: { author_account_id: Number(a), name: "b" + a, hero_build_id: 100 + Number(a), description: "d", last_updated_timestamp: 1, details: { mod_categories: [{ name: "Core", mods: [{ annotation: "n" + a }] }] } } });
+    const handler = async (u) => {
+        await new Promise((r) => setTimeout(r, 15));
+        const a = new URL(u).searchParams.get("author_id");
+        return a === limited ? resp(503, null) : resp(200, [build(a)]);
+    };
+    const p = page(handler);
+    const res = await p.ask({ cmd: "builds", hero: 13, authors: ["1", "2", "3", "4", "5", "6"], ttl: 600 });
+    assert.equal(res.kind, "ok");
+    assert.equal(JSON.parse(res.body).length, 6);
+    assert.deepEqual(JSON.parse(res.body)[0], ["1", "b1", 101, 5, 1, "d", ["n1"], "Core ", 1]);
+    assert.ok(p.maxInFlight <= 2, "in flight " + p.maxInFlight);
+    const t0 = Date.now();
+    await p.ask({ cmd: "builds", hero: 13, authors: ["1", "2", "3"], ttl: 600 });
+    assert.equal(p.calls.length, 6, "answered from storage");
+    p.skip(601); limited = "9";
+    const r2 = await p.ask({ cmd: "builds", hero: 13, authors: ["7", "8", "9", "10"], ttl: 600 });
+    assert.match(r2.body, /^RATE/);
+    p.skip(61); limited = "";
+    const before = p.calls.length;
+    const r3 = await p.ask({ cmd: "builds", hero: 13, authors: ["7", "8", "9", "10"], ttl: 600 });
+    assert.equal(JSON.parse(r3.body).length, 4);
+    assert.ok(p.calls.length - before <= 3, "authors fetched before the limit came from storage: " + p.calls.slice(before));
+    assert.ok(Date.now() - t0 < 5000);
+});
+await test("page: clear forgets saved lookups but keeps the settings and any wait", async () => {
+    const p = page(heroStats);
+    await p.ask({ cmd: "save", settings: { sort: "favs" } });
+    await p.ask({ cmd: "stats", ids: ["4"], hero: 13 });
+    assert.deepEqual(await p.ask({ cmd: "clear" }), { kind: "ok", body: "cleared" });
+    await p.ask({ cmd: "stats", ids: ["4"], hero: 13 });
+    assert.equal(p.calls.length, 2);
+    assert.equal(JSON.parse(p.store.get("bbf_settings")).sort, "favs");
 });
 
 console.log(failures ? failures + " failed" : "all passed");

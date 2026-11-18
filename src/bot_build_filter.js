@@ -86,7 +86,7 @@
             minSpacingSeconds: 2, // between requests (the API allows 100 a second; this stays far below)
             timeoutSeconds: 30,
             topLimit: 150,        // builds fetched when a sort asks for a new search
-            reuseSeconds: 1800    // records are kept this long within a game session
+            // how long lookups are kept: the settings recCacheHours / favCacheHours
         }
     };
     // Links to these do not count as "plugging a website": creators link their socials.
@@ -702,7 +702,8 @@
         statusLabel.text = topState.busy || topState.wanted ? "⟳ Searching: " + sortName(S.sort).toLowerCase() + "…"
             : busy ? "⟳ " + (progress || "Working") + (rateNote ? " · " + rateNote : "") + "  ·  pause"
             : paused ? "Paused  ·  resume"
-            : pending ? "Check " + pending + " in detail" : "";
+            : pending ? "Check " + pending + " in detail"
+            : stats.waitUntil > now() ? "deadlock-api busy · " + Math.ceil(stats.waitUntil - now()) + "s" : "";
         statusLabel.style.color = busy ? "#e8c66a" : paused ? "#ff9f6a" : "#c8b28a";
         sortLabel.text = "Sort: " + sortName(S.sort) + " ▾";
         sortLabel.style.visibility = listOn() ? "visible" : "collapse";
@@ -724,7 +725,8 @@
         sort: "game",
         hideOutdated: false, minGames: 0, minWinRate: 0, minFavs: 0, maxAgeDays: 0,
         showRecord: true, showFavs: true, showTags: true,
-        autoLoad: true, pace: "normal"
+        autoLoad: true, pace: "normal",
+        recCacheHours: 24, favCacheHours: 6
     };
     var SORTS = [
         ["game", "Game order", "As the game listed them, then the builds found while scrolling."],
@@ -896,6 +898,14 @@
         toggleRow(body, "autoLoad", "Load more builds when scrolling", "Off: only when you click the bottom of the list.");
         choiceRow(body, "pace", "Search pace", "Each search is one request to the game's servers.",
             [["normal", "Normal", "Up to 15 searches a minute."], ["gentle", "Gentle", "Up to 7 a minute."]]);
+        section(body, "Saved lookups (deadlock-api.com)");
+        choiceRow(body, "recCacheHours", "Keep authors' records for", "Wins and losses are saved between game sessions and only asked again after this long.",
+            [[1, "1 hour"], [6, "6 hours"], [24, "a day"], [72, "3 days"], [168, "a week"]]);
+        choiceRow(body, "favCacheHours", "Keep favourites and build texts for", "Favourite counts, descriptions and item notes, saved the same way.",
+            [[1, "1 hour"], [6, "6 hours"], [24, "a day"], [72, "3 days"]]);
+        var clearCtl = settingRow(body, "Saved lookups", "Forget them all and ask deadlock-api again.");
+        var clearBtn = textLabel(clearCtl, "BbfChoice", "Clear now");
+        clearBtn.SetPanelEvent("onactivate", function () { clearLookups(); clearBtn.text = "Cleared"; });
 
         var foot = $.CreatePanel("Panel", settingsPanel, "");
         foot.AddClass("BbfSetFoot");
@@ -996,30 +1006,62 @@
     //   stats: { cmd: "stats", ids, hero } -> "account:wins:matches,..."
     //   favs:  { cmd: "favs", hero, limit } -> "min:<least favourites listed>,author:namehash:favs:weekly,..."
     //          for the hero's most favourited builds (namehash: fnv1a of the build name, 8 hex digits).
-    var STATS_PAGE = '<!doctype html><meta charset="utf-8"><title>BBF</title><script>(function(){' +
-        'var API="https://api.deadlock-api.com/v1/";' +
-        'function fnv(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return("0000000"+h.toString(16)).slice(-8)}' +
-        'function send(r,s){var n=Math.max(1,Math.ceil(s.length/3500)),i=0;if(n===1){document.title="BBF1|"+r+"|ok|"+s;return}' +
-        '(function next(){if(i>=n)return;document.title="BBF1|"+r+"|"+i+"/"+n+"|"+s.slice(i*3500,(i+1)*3500);i++;setTimeout(next,15)})()}' +
-        'function fail(r,e){document.title="BBF1|"+r+"|err|"+((e&&e.message)||e)}' +
-        'function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}' +
-        'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}' +
-        'if(P.cmd==="load"){var v="";try{v=localStorage.getItem("bbf_settings")||""}catch(e){}send(P.r,v);return}' +
-        'if(P.cmd==="save"){try{localStorage.setItem("bbf_settings",JSON.stringify(P.settings))}catch(e){}send(P.r,"saved");return}' +
-        'function tuple(b){var h=b.hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];' +
-        'for(var j=0;j<c.length;j++){cats.push((c[j].name||"")+" "+(c[j].description||""));var m=c[j].mods||[];for(var k=0;k<m.length;k++)if(m[k].annotation)notes.push(String(m[k].annotation).slice(0,80))}' +
-        'return[String(h.author_account_id),String(h.name||""),h.hero_build_id|0,b.num_favorites|0,b.num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400),h.last_updated_timestamp|0]}' +
-        'if(P.cmd==="top"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by="+P.sort+"&sort_direction=desc&limit="+(P.limit|0||150)).then(function(l){send(P.r,JSON.stringify(l.map(tuple)))}).catch(function(e){fail(P.r,e)});return}' +
-        'if(P.cmd==="builds"){var out=[],q=P.authors.slice(),busy=0;function one(){if(!q.length){if(!busy)send(P.r,JSON.stringify(out));return}var a=q.shift();busy++;' +
-        'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){for(var i=0;i<l.length;i++)out.push(tuple(l[i]))})' +
-        '.catch(function(){out.push(["!",String(a)])}).then(function(){busy--;one()})}for(var w=0;w<6;w++)one();return}' +
-        'if(P.cmd==="favs"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400)).then(function(a){' +
-        'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}' +
-        'send(P.r,"min:"+min+","+o.join(","))}).catch(function(e){fail(P.r,e)});return}' +
-        'get(API+"players/hero-stats?account_ids="+P.ids.join(",")+"&hero_ids="+P.hero).then(function(a){var o=[];' +
-        'for(var i=0;i<a.length;i++){var x=a[i];if(x.hero_id==P.hero)o.push(x.account_id+":"+(x.wins|0)+":"+(x.matches_played|0))}' +
-        'send(P.r,o.join(","))}).catch(function(e){fail(P.r,e)})}' +
-        'window.addEventListener("hashchange",run);run()})()<\/script>';
+    //   builds: { cmd: "builds", hero, authors } -> JSON [[author, name, id, favs, weekly, desc, notes, cats, updated], ...]
+    //   top:    { cmd: "top", hero, sort, limit } -> the same tuples for the hero's builds in that order
+    //   load/save/clear: the settings / the saved lookups, in the page's localStorage
+    // Saved lookups: every answer is kept in the page's localStorage (Steam's web profile, so it outlives the
+    // game session) and reused for `ttl` seconds (from the player's settings). Being kind to the API: at most
+    // 2 requests at once and 4 a second (it allows 100), account ids sorted so repeated lookups share the
+    // API's CDN cache, "429/503 + Retry-After" waits (saved, so a new game session waits too: "RATE <s>"),
+    // and a URL that timed out (504) is not asked again for a while.
+    var STATS_PAGE = [
+        '<!doctype html><meta charset="utf-8"><title>BBF</title><script>(function(){',
+        'var API="https://api.deadlock-api.com/v1/";',
+        'function T(){return Date.now()/1000}',
+        'function fnv(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return("0000000"+h.toString(16)).slice(-8)}',
+        'function send(r,s){var n=Math.max(1,Math.ceil(s.length/3500)),i=0;if(n===1){document.title="BBF1|"+r+"|ok|"+s;return}',
+        '(function next(){if(i>=n)return;document.title="BBF1|"+r+"|"+i+"/"+n+"|"+s.slice(i*3500,(i+1)*3500);i++;setTimeout(next,15)})()}',
+        'function fail(r,e){document.title="BBF1|"+r+"|err|"+((e&&e.message)||e)}',
+        'function rd(k){try{return JSON.parse(localStorage.getItem(k)||"null")}catch(e){return null}}',
+        'function drop(keep){try{for(var i=localStorage.length-1;i>=0;i--){var k=localStorage.key(i);if(k&&k.indexOf("bbf_c_")===0&&k!==keep)localStorage.removeItem(k)}}catch(e){}}',
+        'function wr(k,v){var s=JSON.stringify(v);try{localStorage.setItem(k,s)}catch(e){drop(k);try{localStorage.setItem(k,s)}catch(e2){}}}',
+        'var act=0,last=0,wq=[];',
+        'function pump(){if(!wq.length||act>=2)return;var d=last+0.25-T();if(d>0){setTimeout(pump,Math.ceil(d*1000));return}act++;last=T();wq.shift()();pump()}',
+        'function wait(){var c=rd("bbf_wait")||0;return c>T()?Math.ceil(c-T()):0}',
+        'function after(r,d){var s=Number(r.headers&&r.headers.get("Retry-After"));return s>0?Math.min(s,3600):d}',
+        'function get(u){var c=wait();if(c)return Promise.reject(new Error("RATE "+c));',
+        'var bad=rd("bbf_bad")||{};if(bad[u]>T())return Promise.reject(new Error("HTTP 504, not asked again for "+Math.ceil(bad[u]-T())+"s"));',
+        'return new Promise(function(ok){wq.push(ok);pump()}).then(function(){return fetch(u).then(function(r){act--;pump();return r},function(){act--;pump();wr("bbf_wait",T()+20);throw new Error("RATE 20")})})',
+        '.then(function(r){if(r.status===429||r.status===503){var s=after(r,60);wr("bbf_wait",T()+s);throw new Error("RATE "+s)}',
+        'if(r.status===504){var b=rd("bbf_bad")||{},n=T();for(var k in b)if(b[k]<n)delete b[k];b[u]=n+after(r,300);wr("bbf_bad",b);throw new Error("HTTP 504")}',
+        'if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}',
+        'function tuple(b){var h=b.hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];',
+        'for(var j=0;j<c.length;j++){cats.push((c[j].name||"")+" "+(c[j].description||""));var m=c[j].mods||[];for(var k=0;k<m.length;k++)if(m[k].annotation)notes.push(String(m[k].annotation).slice(0,80))}',
+        'return[String(h.author_account_id),String(h.name||""),h.hero_build_id|0,b.num_favorites|0,b.num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400),h.last_updated_timestamp|0]}',
+        'function cached(k,u,ttl,r,f){var c=rd("bbf_c_l")||[];for(var i=0;i<c.length;i++)if(c[i].k===k&&T()-c[i].t<ttl){send(r,c[i].v);return}',
+        'get(u).then(function(l){var v=f(l);c=(rd("bbf_c_l")||[]).filter(function(x){return x.k!==k}).slice(-5);c.push({k:k,t:T(),v:v});wr("bbf_c_l",c);send(r,v)}).catch(function(e){fail(r,e)})}',
+        'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}var n=T(),ttl=P.ttl>0?P.ttl:0;',
+        'if(P.cmd==="load"){var v="";try{v=localStorage.getItem("bbf_settings")||""}catch(e){}send(P.r,v);return}',
+        'if(P.cmd==="save"){try{localStorage.setItem("bbf_settings",JSON.stringify(P.settings))}catch(e){}send(P.r,"saved");return}',
+        'if(P.cmd==="clear"){drop("");send(P.r,"cleared");return}',
+        'if(P.cmd==="top"){cached("t|"+P.hero+"|"+P.sort+"|"+(P.limit|0),API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by="+P.sort+"&sort_direction=desc&limit="+(P.limit|0||150),ttl||21600,P.r,function(l){return JSON.stringify(l.map(tuple))});return}',
+        'if(P.cmd==="favs"){cached("f|"+P.hero+"|"+(P.limit|0),API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400),ttl||21600,P.r,function(a){',
+        'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}',
+        'return"min:"+min+","+o.join(",")});return}',
+        'if(P.cmd==="builds"){var bk="bbf_c_b_"+P.hero,bc=rd(bk)||{},bt=ttl||21600,out=[],q=[],rate="",busy=0,sent=0,got=0;',
+        'P.authors.forEach(function(a){var c=bc[a];if(c&&n-c[0]<bt)out=out.concat(c[1]);else q.push(a)});',
+        'function end(){sent=1;if(got){var ks=Object.keys(bc);if(ks.length>300){ks.sort(function(x,y){return bc[x][0]-bc[y][0]});ks.slice(0,ks.length-300).forEach(function(k){delete bc[k]})}wr(bk,bc)}',
+        'if(rate)fail(P.r,rate);else send(P.r,JSON.stringify(out))}',
+        'function one(){if(sent)return;if(rate||!q.length){if(!busy)end();return}var a=q.shift();busy++;',
+        'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){var t=l.map(tuple);bc[a]=[T(),t];got++;out=out.concat(t)})',
+        '.catch(function(e){var m=String((e&&e.message)||e);if(m.indexOf("RATE")===0)rate=m;else out.push(["!",String(a)])}).then(function(){busy--;one()})}one();one();return}',
+        'var rk="bbf_c_r_"+P.hero,rc=rd(rk)||{},rt=ttl||86400,miss=P.ids.filter(function(id){var x=rc[id];return!x||n-x[2]>=rt}).sort();',
+        'function ans(){var o=[];P.ids.forEach(function(id){var x=rc[id];if(x&&x[1]>0)o.push(id+":"+x[0]+":"+x[1])});send(P.r,o.join(","))}',
+        'if(!miss.length){ans();return}',
+        'get(API+"players/hero-stats?account_ids="+miss.join(",")+"&hero_ids="+P.hero).then(function(a){var t=T();rc=rd(rk)||{};miss.forEach(function(id){rc[id]=[0,0,t]});',
+        'for(var i=0;i<a.length;i++){var x=a[i];if(x.hero_id==P.hero)rc[x.account_id]=[x.wins|0,x.matches_played|0,t]}for(var k in rc)if(t-rc[k][2]>691200)delete rc[k];wr(rk,rc);ans()}).catch(function(e){fail(P.r,e)})}',
+        'window.addEventListener("hashchange",run);run()})()<\/script>'
+    ].join("");
     function fnv(s) {
         var h = 0x811c9dc5;
         for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
@@ -1070,6 +1112,21 @@
         try { probe.DeleteAsync(0); } catch (e) {}
         return hit;
     }
+    function recTtl() { return S.recCacheHours * 3600; }
+    function favTtl() { return S.favCacheHours * 3600; }
+    // "Clear now": forget every lookup, here and in the page's storage, and ask again.
+    function clearLookups() {
+        stats.data = {}; favs.data = null; favs.min = -1; favs.tried = 0;
+        apiAsked = {}; apiFails = {};
+        Object.keys(known).forEach(function (k) { if (known[k].src === "api") delete known[k]; });
+        saveKnown();
+        if (stats.heroId) { keep(statsKey(), null); keep(favsKey(), null); keep("bbf3_api_asked_" + stats.heroId, {}); }
+        statsWant = []; statsAuthorsVersion = -1; buildsWantCache = null;
+        settingsState.clearWanted = true;
+        sharedCache = null;
+        version++;
+        log("saved lookups cleared");
+    }
     function statsKey() { return "bbf3_stats_" + stats.heroId; }
     function favsKey() { return "bbf3_favs_" + stats.heroId; }
     function startStats() {
@@ -1078,10 +1135,10 @@
         if (!hero) { stats.state = "failed"; stats.note = "could not tell which hero this is"; return; }
         stats.heroId = hero.id; stats.heroName = hero.name;
         var kept = recall(statsKey(), null);
-        if (kept && now() - kept.at < SC.reuseSeconds) stats.data = kept.data || {};
+        if (kept && now() - kept.at < recTtl()) stats.data = kept.data || {};
         apiAsked = recall("bbf3_api_asked_" + stats.heroId, {});
         var keptFavs = recall(favsKey(), null);
-        if (keptFavs && now() - keptFavs.at < SC.reuseSeconds) { favs.data = keptFavs.data; favs.min = keptFavs.min; }
+        if (keptFavs && now() - keptFavs.at < favTtl()) { favs.data = keptFavs.data; favs.min = keptFavs.min; }
         stats.state = "ready";
         version++;
     }
@@ -1142,7 +1199,7 @@
             try {
                 if (body) { S = cleanSettings(JSON.parse(body)); keep("bbf3_settings", S); applySettings(); if (state.on !== S.hideBots) setOn(S.hideBots); drawSettings(); log("settings loaded"); }
             } catch (e) { log("settings: saved copy unreadable"); }
-        } else if (cmd.cmd === "save") {
+        } else if (cmd.cmd === "save" || cmd.cmd === "clear") {
             // nothing to do
         } else if (cmd.cmd === "builds") {
             var got = 0, failed = {}, apiNames = {};
@@ -1187,6 +1244,21 @@
     // A page that cannot load at all will not start working: three of those switch the lookups off for
     // this browser. A slow or failed answer only means waiting longer before the next request.
     function statsFailed(why, fatal) {
+        // deadlock-api asked us to slow down (or could not be reached): wait as long as it said, then
+        // ask again; that is not a failure of the request itself.
+        var rate = /^RATE (\d+)/.exec(why);
+        if (rate) {
+            if (stats.cur && stats.cur.cmd === "top") { topState.wanted = stats.cur.sort; topState.busy = false; }
+            if (stats.cur && stats.cur.cmd === "stats") { statsWant = stats.cur.ids.concat(statsWant); }
+            stats.cur = null; stats.parts = null;
+            stats.waitUntil = now() + Number(rate[1]) + 1;
+            stats.nextAt = stats.waitUntil;
+            stats.state = "ready";
+            stats.note = "deadlock-api.com is busy";
+            log("lookup: deadlock-api.com asked to slow down, waiting " + rate[1] + "s");
+            version++;
+            return;
+        }
         if (stats.cur && stats.cur.cmd === "favs") favs.tried++;
         if (stats.cur && stats.cur.cmd === "top") topState.busy = false;
         stats.fails++;
@@ -1208,16 +1280,17 @@
         // Saved settings first (once), a pending save, then build texts, then authors' records.
         if (!settingsState.tried) { settingsState.tried = true; send({ cmd: "load" }); return; }
         if (settingsState.saveWanted) { settingsState.saveWanted = false; send({ cmd: "save", settings: S }); return; }
-        if (topState.wanted) { var t = topState.wanted; topState.wanted = null; topState.busy = true; send({ cmd: "top", hero: stats.heroId, sort: t, limit: SC.topLimit }); return; }
+        if (settingsState.clearWanted) { settingsState.clearWanted = false; send({ cmd: "clear" }); return; }
+        if (topState.wanted) { var t = topState.wanted; topState.wanted = null; topState.busy = true; send({ cmd: "top", hero: stats.heroId, sort: t, limit: SC.topLimit, ttl: favTtl() }); return; }
         var need = buildsWanted();
-        if (need.length) { send({ cmd: "builds", hero: stats.heroId, authors: need.slice(0, SC.buildsBatch) }); return; }
+        if (need.length) { send({ cmd: "builds", hero: stats.heroId, authors: need.slice(0, SC.buildsBatch), ttl: favTtl() }); return; }
         if (statsAuthorsVersion !== version) {
             statsAuthorsVersion = version;
             var seen = {};
             statsWant = [];
             authorsOf().forEach(function (a) { if (a && a !== "0" && !stats.data[a] && !seen[a]) { seen[a] = true; statsWant.push(a); } });
         }
-        if (statsWant.length) { send({ cmd: "stats", ids: statsWant.slice(0, SC.batch), hero: stats.heroId }); statsWant = statsWant.slice(SC.batch); }
+        if (statsWant.length) { send({ cmd: "stats", ids: statsWant.slice(0, SC.batch), hero: stats.heroId, ttl: recTtl() }); statsWant = statsWant.slice(SC.batch); }
     }
     var buildsWantCache = null, buildsWantVersion = -1;
     function buildsWanted() {

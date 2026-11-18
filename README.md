@@ -60,9 +60,21 @@ Hover the record for the details. The game only shares hero records with friends
 from deadlock-api.com's public match data, which doesn't cover every match. `0W 0L` therefore means
 "none recorded". Mod scripts can't reach the network, so the mod opens a tiny page in a hidden 1-pixel game web view:
 [`relay/stats.html`](relay/stats.html), served by this repo's GitHub Pages. The page asks
-deadlock-api.com for up to 100 authors at once and passes the answer back through its title. Requests
-are at least 2 s apart, and records are kept for 30 min. The request goes from your own PC: your
+deadlock-api.com for up to 30 authors at once and passes the answer back through its title. The request goes from your own PC: your
 client sends the API the account IDs of the build authors on screen, plus your IP address.
+
+**Saved lookups.** Records, favourites and build texts are saved in the lookup page's browser storage
+(Steam's web profile), so they survive game restarts. The page only asks deadlock-api again once an
+entry is older than the keep-time in ⚙ settings: records a day, favourites and build texts 6 hours by
+default. **Clear now** forgets them all.
+
+**Rate limits.** deadlock-api allows 100 requests a second per IP; the mod stays far below that:
+- at most 2 requests at once and 4 a second, with commands at least 2 s apart;
+- saved lookups, so most requests are never sent, and sorted account IDs so repeated lookups hit the
+  API's CDN cache;
+- on `429` or `503` (load shedding) it waits for `Retry-After` (60 s if not given). The wait is
+  saved, so a restarted game waits too. Meanwhile the status shows `deadlock-api busy · Ns`;
+- a request that timed out (`504`) isn't sent again for 5 minutes, as the API asks.
 
 If the page or the API can't be reached, records stay blank and everything else keeps working.
 To use your own copy of the page, set `CONFIG.stats.relayUrl`. To turn records off, set
@@ -91,7 +103,9 @@ the mod has already checked. The picker also gets a solid background.
 | Most wins | the author's wins on this hero |
 | Best win rate | the author's win rate on this hero, 5+ games |
 
-Builds still loading their data go last.
+Most favourited, Trending and Latest updated also search deadlock-api for this hero's top 150
+builds in that order (once per order), so the best builds show even if the game never listed them;
+the author sorts rank the most favourited builds. Builds still loading their data go last.
 
 **Settings (⚙).** One panel, in plain words:
 - **Bot builds:** hide them or not; how strict (Relaxed / Normal / Strict); remember bot accounts.
@@ -101,6 +115,8 @@ Builds still loading their data go last.
 - **Sort.**
 - **Show on each build:** the author's record, favourites, tags.
 - **Loading:** load more when scrolling; Normal or Gentle search pace.
+- **Saved lookups:** how long to keep authors' records (1 hour to a week) and favourites/build texts
+  (1 hour to 3 days); Clear now.
 
 Data that's still loading never hides a build. The bottom of the list says how many builds your
 settings hide. Settings are kept for the game session and, across sessions, in the lookup page's
