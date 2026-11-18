@@ -40,8 +40,8 @@ game's own row layout and styles, so it looks and works the same: click a row to
 The tab-bar control:
 - **Bot filter: ON · N builds**: click to turn the filter OFF and get the game's own list back, with
   suspected builds tagged `BOT?`. Hover a tag to see why the build was flagged.
-- **⟳ Checking 12/40 · pause**: item notes only appear in the details pane, so new builds are
-  previewed once (about 3–4 frames each). While your cursor is on the details pane (or on the game's
+- **⟳ … · pause** while the mod loads; **Paused · resume** after you click a build during it.
+  Previewing builds is off by default (see below). While your cursor is on the details pane (or on the game's
   list, when that is the one showing), nothing is previewed. Clicking a build pauses checking; the
   label then offers **resume**.
 
@@ -78,6 +78,38 @@ To use your own copy of the page, set `CONFIG.stats.relayUrl`. To turn records o
 Picking one filters the list. The tab bar shows `Tags: L>R ×`; click it to clear the filter. Matching
 rows also carry these tags as chips, in whatever is left of the three tag slots after the build's own tags. The game network can't search by them, so they filter the builds
 the mod has already checked. The picker also gets a solid background.
+
+**Sorting.** Click **Sort: … ▾** in the tab bar to pick an order:
+
+| Sort | What comes first |
+|---|---|
+| Game order | as listed by the game, then builds found while scrolling |
+| Most favourited | most favourites |
+| Trending | most favourites this week |
+| Latest updated | most recently updated |
+| Most played | the author's games on this hero |
+| Most wins | the author's wins on this hero |
+| Best win rate | the author's win rate on this hero, 5+ games |
+
+Builds still loading their data go last.
+
+**Settings (⚙).** One panel, in plain words:
+- **Bot builds:** hide them or not; how strict (Relaxed / Normal / Strict); remember bot accounts.
+- **Hide builds that…** are outdated; whose author played this hero fewer than N games; whose
+  author's win rate is below N% (judged at 5+ games); have fewer than N favourites; weren't updated
+  within a week, month, 3 months, 6 months or a year.
+- **Sort.**
+- **Show on each build:** the author's record, favourites, tags.
+- **Loading:** load more when scrolling; Normal or Gentle search pace.
+
+Data that's still loading never hides a build. The bottom of the list says how many builds your
+settings hide. Settings are kept for the game session and, across sessions, in the lookup page's
+browser storage inside Steam's web view, because the game gives mods no file to write.
+
+**Loading without showing anything.** Build texts (description, item notes, category notes,
+favourites, last update) come from deadlock-api.com in the background, one small request per author
+for this hero. Nothing is previewed in the details pane. Builds deadlock-api doesn't have yet stay
+slightly dimmed. **Check N in detail** previews those once, only when you click it.
 
 Typing your own search shows the game's results for it, with bot builds hidden in place.
 Only item notes set on the item itself count. Values inherited from parent panels, and notes that

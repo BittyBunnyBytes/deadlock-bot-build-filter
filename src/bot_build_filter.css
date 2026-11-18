@@ -125,3 +125,194 @@ PopupBuildTagPicker.PopupPanel
 	width: 30px;
 	height: 30px;
 }
+
+/* ---- settings (⚙) and sort menu: laid over the build list ---- */
+.BbfSettings, .BbfSortMenu
+{
+	ignore-parent-flow: true;
+	horizontal-align: left;
+	vertical-align: top;
+	flow-children: down;
+	background-color: #14181200;
+	visibility: collapse;
+	z-index: 10;
+}
+.BbfSettings.BbfOpen, .BbfSortMenu.BbfOpen
+{
+	visibility: visible;
+}
+.BbfSettings
+{
+	width: 660px;
+	height: 100%;
+	background-color: #121510F7;
+	border-right: 1px solid #FFFFFF1A;
+	box-shadow: #000000CC 0px 0px 30px 0px;
+}
+.BbfSetHead
+{
+	width: 100%;
+	flow-children: right;
+	padding: 14px 18px 10px 18px;
+	border-bottom: 2px solid #69E799;
+}
+.BbfSetHeadTitle
+{
+	width: fill-parent-flow(1.0);
+	font-size: 24px;
+	font-weight: bold;
+	color: #FFEFD7;
+}
+.BbfSetClose
+{
+	font-size: 26px;
+	color: #FFEFD7AA;
+	padding: 0px 6px;
+}
+.BbfSetClose:hover
+{
+	color: #FFFFFF;
+}
+.BbfSetBody
+{
+	width: 100%;
+	height: fill-parent-flow(1.0);
+	flow-children: down;
+	overflow: squish scroll;
+	padding: 4px 18px 12px 18px;
+}
+.BbfSetSection
+{
+	margin-top: 16px;
+	margin-bottom: 2px;
+	font-size: 15px;
+	font-weight: bold;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	color: #69E799;
+}
+.BbfSetRow
+{
+	width: 100%;
+	flow-children: down;
+	padding: 8px 0px;
+	border-bottom: 1px solid #FFFFFF0D;
+}
+.BbfSetLine
+{
+	width: 100%;
+	flow-children: right;
+}
+.BbfSetTitle
+{
+	width: fill-parent-flow(1.0);
+	vertical-align: center;
+	font-size: 17px;
+	color: #FFEFD7;
+}
+.BbfSetControl
+{
+	horizontal-align: right;
+	vertical-align: center;
+	flow-children: right;
+}
+.BbfSetDesc
+{
+	width: 100%;
+	margin-top: 3px;
+	font-size: 13px;
+	color: #FFEFD780;
+}
+.BbfPill
+{
+	min-width: 56px;
+	text-align: center;
+	padding: 3px 10px;
+	border-radius: 12px;
+	font-size: 14px;
+	font-weight: bold;
+	color: #FFEFD7AA;
+	background-color: #FFFFFF14;
+}
+.BbfPill.BbfPillOn
+{
+	color: #10130D;
+	background-color: #69E799;
+}
+.BbfChoices
+{
+	flow-children: right-wrap;
+	max-width: 420px;
+}
+.BbfChoice
+{
+	margin: 2px 0px 2px 4px;
+	padding: 3px 9px;
+	border-radius: 3px;
+	font-size: 14px;
+	color: #FFEFD7AA;
+	background-color: #FFFFFF10;
+}
+.BbfChoice:hover, .BbfPill:hover, .BbfSetButton:hover, .BbfSortItem:hover
+{
+	brightness: 1.4;
+}
+.BbfChoice.BbfChoiceOn
+{
+	color: #10130D;
+	background-color: #69E799;
+	font-weight: bold;
+}
+.BbfSetFoot
+{
+	width: 100%;
+	flow-children: right;
+	padding: 10px 18px 14px 18px;
+	border-top: 1px solid #FFFFFF1A;
+}
+.BbfSetButton
+{
+	margin-right: 10px;
+	padding: 6px 16px;
+	border-radius: 3px;
+	font-size: 15px;
+	color: #FFEFD7;
+	background-color: #FFFFFF14;
+}
+.BbfSetButton.BbfSetButtonMain
+{
+	horizontal-align: right;
+	color: #10130D;
+	font-weight: bold;
+	background-color: #69E799;
+}
+.BbfSortMenu
+{
+	width: 360px;
+	margin-left: 8px;
+	padding: 6px 0px;
+	background-color: #121510F7;
+	border: 1px solid #FFFFFF1A;
+	box-shadow: #000000CC 0px 0px 24px 0px;
+}
+.BbfSortItem
+{
+	width: 100%;
+	flow-children: down;
+	padding: 7px 14px;
+}
+.BbfSortItem.BbfChoiceOn
+{
+	background-color: #69E79926;
+	border-left: 3px solid #69E799;
+}
+.BbfSortName
+{
+	font-size: 17px;
+	color: #FFEFD7;
+}
+.BbfSortDesc
+{
+	font-size: 13px;
+	color: #FFEFD780;
+}

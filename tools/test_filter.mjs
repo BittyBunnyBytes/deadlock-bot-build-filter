@@ -155,6 +155,7 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
             if (b.name === activeName) row.AddClass("ActiveBuild");
             if (b.author === "0") row.AddClass("DefaultBuild");
             if (b.mine) { row.AddClass("MyBuild"); row.RemoveClass("PublicBuild"); }
+            if (b.obsolete) row.AddClass("ObsoleteBuild");
             if (favs.has(b.name)) row.AddClass("Favorite");
             const tagBox = new P("Panel", row.children[0], ""); tagBox.AddClass("BuildTagContainer");
             for (let i = 1; i <= 3; i++) { const tg = new P("CitadelBuildTag", tagBox, "BuildTag" + i); if (b.tags && b.tags[i - 1]) tg.vars.tag_name = b.tags[i - 1]; else tg.AddClass("Empty"); }
@@ -221,8 +222,10 @@ function makeBrowser({ db, defaultList, rowsHaveDescription = false, activeName 
                     if (webView === "blocked") return fire("HTMLURLChanged", "http://error/");
                     if (webView === "silent") return;
                     let body;
-                    if (cmd.cmd === "builds") body = JSON.stringify(db.filter((b) => cmd.authors.includes(b.author) && !b.apiMissing)
-                        .map((b) => { const f = FAVS.find((x) => x[0] === b.author && x[1] === b.name); return [b.author, b.name, b.id, f ? f[2] : 7, f ? f[3] : 0, b.desc || "", b.annotations || [], b.cats || ""]; }));
+                    if (cmd.cmd === "load") body = STORE.bbf_settings || "";
+                    else if (cmd.cmd === "save") { STORE.bbf_settings = JSON.stringify(cmd.settings); body = "saved"; }
+                    else if (cmd.cmd === "builds") body = JSON.stringify(db.filter((b) => cmd.authors.includes(b.author) && !b.apiMissing)
+                        .map((b) => { const f = FAVS.find((x) => x[0] === b.author && x[1] === b.name); return [b.author, b.name, b.id, typeof b.apiFav === "number" ? b.apiFav : f ? f[2] : 7, f ? f[3] : 0, b.desc || "", b.annotations || [], b.cats || "", b.updated || 0]; }));
                     else if (cmd.cmd === "favs") body = "min:" + Math.min(...FAVS.map((f) => f[2])) + "," + FAVS.map((f) => f[0] + ":" + fnv(f[1]) + ":" + f[2] + ":" + f[3]).join(",") + "," + "x".repeat(0);
                     else body = cmd.ids.filter((id) => RECORDS[id] && cmd.hero === 13).map((id) => id + ":" + RECORDS[id][0] + ":" + RECORDS[id][1]).join(",");
                     // like the page: chunks of at most 40 characters here (3500 there), arriving out of order
@@ -266,7 +269,9 @@ const visible = (b) => b.list.children.filter((r) => {
 }).map((r) => r.build.name);
 const ctl = (b) => b.tabs.children.find((c) => c.classes.has("BbfControl"));
 const labels = (b) => ctl(b).children.map((c) => c.text);
-function reset() { clock = 0; timers = []; }
+const part = (b, cls) => ctl(b).children.find((c) => c.classes.has(cls));
+const STORE = {};   // the lookup page's browser storage (survives browsers, like Steam's web profile)
+function reset() { clock = 0; timers = []; for (const k in STORE) delete STORE[k]; }
 const PREVIEW = SRC.replace("previewChecks: false,", "previewChecks: true,");      // old behaviour: read builds by previewing them
 const IN_PLACE = PREVIEW.replace("fill: true,", "fill: false,");
 const IN_PLACE_API = SRC.replace("fill: true,", "fill: false,");
@@ -306,13 +311,13 @@ await test("in place: a click by the player pauses checking and keeps their pick
     const br = makeBrowser({ db, defaultList: db, src: IN_PLACE });
     br.start();
     await advance(0.8);
-    assert.match(labels(br)[2], /Checking \d+\/40/);
+    assert.match(part(br, "BbfStatus").text, /Checking \d+\/40/);
     br.list.hover = true;                                                // the cursor moves onto the list...
     timers.push({ at: clock + 5 * FRAME, f: () => br.show(db[30]) });   // ...and the player clicks a row
     timers.push({ at: clock + 1.0, f: () => { br.list.hover = false; } });
     await advance(2);
     assert.equal(br.details.vars.selected_hero_build_name, db[30].name);
-    assert.match(labels(br)[2], /Paused  ·  resume/);
+    assert.match(part(br, "BbfStatus").text, /Paused  ·  resume/);
     const n = br.ev.previews.length;
     await advance(5);
     assert.equal(br.ev.previews.length, n);
@@ -421,7 +426,8 @@ await test("list: clicking a build while loading more pauses the background work
     const db = copy(SAMPLES).concat(bigDb(60, 100, "spirit"), bigDb(60, 300, "gun"));
     const br = makeBrowser({ db, defaultList: copy(SAMPLES) });
     br.start();
-    await advance(3.2);
+    await advance(2);
+    for (let i = 0; i < 200 && !/Loading more/.test(part(br, "BbfStatus").text); i++) await advance(0.05);   // a load is running
     br.ownRow("Haze bullet spam").events.onactivate();
     await advance(6);
     assert.equal(br.details.vars.selected_hero_build_name, "Haze bullet spam");
@@ -430,7 +436,7 @@ await test("list: clicking a build while loading more pauses the background work
     await advance(10);
     assert.equal(br.ev.searches.length, n);
     assert.equal(br.ev.previews.length, p);
-    assert.match(labels(br)[2], /Paused/);
+    assert.match(part(br, "BbfStatus").text, /Paused/);
 });
 await test("list: filter off shows the game's list again (normal results), bots tagged", async () => {
     reset();
@@ -438,7 +444,7 @@ await test("list: filter off shows the game's list again (normal results), bots 
     const br = makeBrowser({ db, defaultList: copy(SAMPLES) });
     br.start();
     await advance(20);
-    ctl(br).children[0].events.onactivate();
+    part(br, "BbfToggle").events.onactivate();
     await advance(3);
     assert.equal(br.shown(), null);
     assert.deepEqual(br.list.children.map((r) => r.build.name), SAMPLES.map((x) => x.name));
@@ -485,8 +491,9 @@ await test("records: each author's W/L on this hero, 0W 0L when none recorded; f
     assert.equal(favText(br.ownRow("Tank Haze")), "★ 1.2k");
     assert.equal(favText(br.ownRow("Rem first try")), "★ 7", "every build's own count");
     assert.equal(favText(br.ownRow("Default Haze Build")), null);
-    assert.ok(br.ev.statReqs.length >= 2 && br.ev.statReqs.every((r) => r.hero === 13 && r.page === "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html"), JSON.stringify(br.ev.statReqs));
-    assert.equal(br.ev.statReqs[0].cmd, "builds", "build texts first");
+    assert.ok(br.ev.statReqs.length >= 2 && br.ev.statReqs.every((r) => (r.cmd === "load" || r.hero === 13) && r.page === "https://bittybunnybytes.github.io/deadlock-bot-build-filter/relay/stats.html"), JSON.stringify(br.ev.statReqs));
+    assert.equal(br.ev.statReqs[0].cmd, "load", "saved settings first");
+    assert.equal(br.ev.statReqs[1].cmd, "builds", "then build texts");
     assert.ok(br.ev.statReqs.some((r) => r.cmd === "stats" && r.n >= 4), "records batched");
 });
 await test("records: also on the game's own rows (filter off)", async () => {
@@ -495,7 +502,7 @@ await test("records: also on the game's own rows (filter off)", async () => {
     const br = makeBrowser({ db, defaultList: db });
     br.start();
     await advance(3);
-    ctl(br).children[0].events.onactivate();
+    part(br, "BbfToggle").events.onactivate();
     await advance(6);
     const row = br.list.children.find((r) => r.build.name === "Tank Haze");
     assert.equal(recText(row), "12W 8L");
@@ -523,7 +530,7 @@ await test("records: a web view that cannot open the page gives up after 3 tries
     const br = makeBrowser({ db, defaultList: db, webView: "blocked" });
     br.start();
     await advance(240);
-    assert.equal(br.ev.statReqs.length, 3);
+    assert.equal(br.ev.statReqs.length, 3, "gives up after three failed requests");
     assert.ok(br.ev.log.some((l) => /author records: the web view could not open/.test(l)));
     assert.ok(br.shown().includes("Haze bullet spam"));
     assert.equal(recText(br.ownRow("Haze bullet spam")), null);
@@ -649,7 +656,7 @@ await test("tag filter: picking L>R / Annotated filters the list; our tags show 
     br.manager.SetAttributeString("bbf3_tag_filter", "annotated");
     await advance(1);
     assert.deepEqual(br.shown(), ["Haze bullet spam", "Tank Haze"]);
-    ctl(br).children[1].events.onactivate();   // the × on the filter label
+    part(br, "BbfFilterLabel").events.onactivate();   // the × on the filter label
     await advance(1);
     assert.ok(br.shown().includes("Plain build"));
 });
@@ -705,7 +712,7 @@ await test("background: builds the API lacks stay unchecked; 'Check N in detail'
     assert.deepEqual(br.ev.previews, []);
     assert.ok(br.shown().includes("Haze vs melee"), "not known as a bot yet (its notes are only in the details pane)");
     assert.ok(br.ownRow("Haze vs melee").classes.has("BbfUnchecked"));
-    const status = ctl(br).children[2];
+    const status = part(br, "BbfStatus");
     for (let i = 0; i < 120 && !/Check/.test(status.text); i++) await advance(0.5);   // filling a short list stops after a dry batch
     assert.match(status.text, /Check 2 in detail/);
     status.events.onactivate();
@@ -727,7 +734,7 @@ await test("background: a search does not take away the build the player picked"
     const origSearch = br.selector.RemoveClass.bind(br.selector);
     br.selector.RemoveClass = (c) => { origSearch(c); if (c === "BuildsLoading" && br.list.children[0]) br.show(br.list.children[0].build); };
     // resume (if the pick paused background work) and load more while the pick is shown
-    const statusLabel = ctl(br).children[2];
+    const statusLabel = part(br, "BbfStatus");
     if (/resume/.test(statusLabel.text)) statusLabel.events.onactivate();
     await advance(1);
     br.own().children.find((r) => r.classes.has("BbfMore")).events.onactivate();
@@ -749,6 +756,110 @@ await test("background: a big batch of new rows is created over several passes",
     P.prototype.BLoadLayoutSnippet = orig;
     assert.ok(br.shown().length >= 80);
     assert.ok(maxPerFrame <= 12, "rows made in one pass: " + maxPerFrame);
+});
+
+// ------------------------------------------------------------------ sorting and settings
+function richDb() {
+    const db = [
+        { key: "4|Haze bullet spam", author: "4", name: "Haze bullet spam", desc: "gun", annotations: [], apiFav: 500, updated: 1790000000 },
+        { key: "5|Spirit Haze (fun)", author: "5", name: "Spirit Haze (fun)", desc: "spirit", annotations: [], apiFav: 9000, updated: 1795000000 },
+        { key: "7|Tank Haze", author: "7", name: "Tank Haze", desc: "tank", annotations: [], apiFav: 20, updated: 1780000000, obsolete: true },
+        { key: "9|Never played", author: "9", name: "Never played", desc: "theory", annotations: [], apiFav: 3, updated: 1794000000 },
+        { key: "0|Default Haze Build", author: "0", name: "Default Haze Build", desc: "valve", annotations: [] }
+    ];
+    return db;
+}
+const order = (b) => b.shown().filter((n) => n !== "Default Haze Build");
+await test("sorting: favourites, latest updated, most played, most wins, win rate", async () => {
+    reset(); for (const k in STORE) delete STORE[k];
+    const db = richDb();
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(15);
+    assert.deepEqual(order(br), ["Haze bullet spam", "Spirit Haze (fun)", "Tank Haze", "Never played"], "game order");
+    part(br, "BbfSortLabel").events.onactivate();   // open the sort menu
+    const menu = br.main.children.find((c) => c.classes.has("BbfSortMenu"));
+    assert.ok(menu.classes.has("BbfOpen"));
+    const pick = (name) => menu.children.find((i) => i.children[0].text === name).events.onactivate();
+    pick("Most favourited"); await advance(0.5);
+    assert.deepEqual(order(br), ["Spirit Haze (fun)", "Haze bullet spam", "Tank Haze", "Never played"]);
+    assert.ok(!menu.classes.has("BbfOpen"), "menu closes");
+    assert.match(part(br, "BbfSortLabel").text, /Sort: Most favourited/);
+    part(br, "BbfSortLabel").events.onactivate(); pick("Latest updated"); await advance(0.5);
+    assert.deepEqual(order(br), ["Spirit Haze (fun)", "Never played", "Haze bullet spam", "Tank Haze"]);
+    part(br, "BbfSortLabel").events.onactivate(); pick("Most played"); await advance(0.5);
+    assert.deepEqual(order(br), ["Haze bullet spam", "Tank Haze", "Spirit Haze (fun)", "Never played"], "52, 20, 9, 0 games");
+    part(br, "BbfSortLabel").events.onactivate(); pick("Most wins"); await advance(0.5);
+    assert.deepEqual(order(br), ["Haze bullet spam", "Tank Haze", "Spirit Haze (fun)", "Never played"]);
+    part(br, "BbfSortLabel").events.onactivate(); pick("Best win rate"); await advance(0.5);
+    assert.deepEqual(order(br), ["Tank Haze", "Haze bullet spam", "Spirit Haze (fun)", "Never played"], "60%, 58%, 11% (5+ games), then none");
+    assert.equal(br.shown()[br.shown().length - 1], "Default Haze Build", "Valve's build stays last");
+});
+function setting(br, title) {
+    const panel = br.main.children.find((c) => c.classes.has("BbfSettings"));
+    const rowsAll = panel.FindChildrenWithClassTraverse("BbfSetRow");
+    const row = rowsAll.find((r) => r.FindChildrenWithClassTraverse("BbfSetTitle")[0].text === title);
+    assert.ok(row, "setting row " + title);
+    return row;
+}
+const choose = (br, title, label) => setting(br, title).FindChildrenWithClassTraverse("BbfChoice").find((c) => c.text === label).events.onactivate();
+const flip = (br, title) => setting(br, title).FindChildrenWithClassTraverse("BbfPill")[0].events.onactivate();
+await test("settings: the ⚙ opens a panel; hiding outdated, low-game and low-win-rate builds; reset", async () => {
+    reset(); for (const k in STORE) delete STORE[k];
+    const db = richDb();
+    const br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(15);
+    part(br, "BbfCog").events.onactivate();
+    const panel = br.main.children.find((c) => c.classes.has("BbfSettings"));
+    assert.ok(panel.classes.has("BbfOpen"));
+    assert.equal(setting(br, "Hide bot builds").FindChildrenWithClassTraverse("BbfPill")[0].text, "ON");
+    flip(br, "…are outdated"); await advance(0.5);
+    assert.ok(!order(br).includes("Tank Haze"));
+    choose(br, "…whose author played this hero less than", "1 game"); await advance(0.5);
+    assert.ok(!order(br).includes("Never played"), "0 recorded games");
+    choose(br, "…whose author's win rate is below", "50%"); await advance(0.5);
+    assert.deepEqual(order(br), ["Haze bullet spam"], "11% over 9 games is hidden");
+    assert.match(br.own().children.find((r) => r.classes.has("BbfMore")).children[0].text, /3 hidden by your settings/);
+    choose(br, "…have fewer favourites than", "1k"); await advance(0.5);
+    assert.deepEqual(order(br), []);
+    panel.FindChildrenWithClassTraverse("BbfSetButton").find((b) => b.text === "Reset to defaults").events.onactivate(); await advance(0.5);
+    assert.equal(order(br).length, 4);
+    flip(br, "The author's record"); await advance(0.5);
+    assert.equal(recText(br.ownRow("Haze bullet spam")), null, "record hidden on rows");
+    panel.FindChildrenWithClassTraverse("BbfSetButton").find((b) => b.text === "Done").events.onactivate();
+    assert.ok(!panel.classes.has("BbfOpen"));
+});
+await test("settings: saved in the lookup page's storage and loaded by the next build browser", async () => {
+    reset(); for (const k in STORE) delete STORE[k];
+    const db = richDb();
+    let br = makeBrowser({ db, defaultList: db });
+    br.start();
+    await advance(10);
+    part(br, "BbfCog").events.onactivate();
+    choose(br, "Order the list by", "Most favourited");
+    choose(br, "How strict", "Strict");
+    await advance(6);
+    assert.ok(STORE.bbf_settings && JSON.parse(STORE.bbf_settings).sort === "favs", "saved: " + STORE.bbf_settings);
+    clock = 0; timers = [];                       // a new game session (the page storage stays)
+    br = makeBrowser({ db, defaultList: db });   // nothing on the popup manager
+    br.start();
+    await advance(15);
+    assert.match(part(br, "BbfSortLabel").text, /Most favourited/);
+    assert.deepEqual(order(br)[0], "Spirit Haze (fun)");
+});
+await test("settings: with loading on scroll off, scrolling does not search", async () => {
+    reset(); for (const k in STORE) delete STORE[k];
+    STORE.bbf_settings = JSON.stringify({ autoLoad: false });
+    const db = copy(SAMPLES).concat(bigDb(40, 100, "spirit"));
+    const br = makeBrowser({ db, defaultList: copy(SAMPLES) });
+    br.start();
+    for (let i = 0; i < 40; i++) { br.scrollToBottom(); await advance(0.5); }
+    assert.deepEqual(br.ev.searches.filter((x) => x), [], "no word searches");
+    assert.match(br.own().children.find((r) => r.classes.has("BbfMore")).children[0].text, /Click to load more/);
+    br.own().children.find((r) => r.classes.has("BbfMore")).events.onactivate();
+    await advance(8);
+    assert.ok(br.ev.searches.filter((x) => x).length >= 1, "a click still loads");
 });
 
 console.log(failures ? failures + " failed" : "all passed");

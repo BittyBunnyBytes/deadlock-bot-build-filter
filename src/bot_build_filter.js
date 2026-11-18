@@ -652,16 +652,30 @@
     control.style.borderRadius = "4px";
     control.style.backgroundColor = "#00000066";
     var toggleLabel = label(control, "", 16);
+    toggleLabel.AddClass("BbfToggle");
     toggleLabel.style.verticalAlign = "center";
+    var cogLabel = label(control, "⚙", 18, "#FFEFD7");
+    cogLabel.AddClass("BbfCog");
+    cogLabel.style.marginLeft = "10px";
+    cogLabel.style.verticalAlign = "center";
+    cogLabel.SetPanelEvent("onactivate", function () { openPanel(settingsOpen() ? null : "settings"); });
+    tooltip(cogLabel, "Settings: what to hide, how to sort, what to show on rows.");
+    var sortLabel = label(control, "", 16, "#d8cbb4");
+    sortLabel.AddClass("BbfSortLabel");
+    sortLabel.style.marginLeft = "12px";
+    sortLabel.style.verticalAlign = "center";
+    sortLabel.SetPanelEvent("onactivate", function () { openPanel(sortOpen() ? null : "sort"); });
+    tooltip(sortLabel, "How the list is ordered.");
     var filterLabel = label(control, "", 16, "#9fd8ff");
+    filterLabel.AddClass("BbfFilterLabel");
     filterLabel.style.marginLeft = "10px";
     filterLabel.style.verticalAlign = "center";
     filterLabel.SetPanelEvent("onactivate", function () { try { tagFilter(); rootPanel.SetAttributeString("bbf3_tag_filter", ""); } catch (e) {} });
     var statusLabel = label(control, "", 16, "#c8b28a");
+    statusLabel.AddClass("BbfStatus");
     statusLabel.style.marginLeft = "10px";
     statusLabel.style.verticalAlign = "center";
     toggleLabel.SetPanelEvent("onactivate", function () { setOn(!state.on); });
-    // Busy: pause. Paused: resume. Idle: check again.
     // Busy: pause. Paused: resume (background work only). Idle with unchecked builds: check them in detail.
     statusLabel.SetPanelEvent("onactivate", function () {
         if (busy) { pause("paused from the control"); return; }
@@ -679,6 +693,8 @@
             : paused ? "Paused  ·  resume"
             : pending ? "Check " + pending + " in detail" : "";
         statusLabel.style.color = busy ? "#e8c66a" : paused ? "#ff9f6a" : "#c8b28a";
+        sortLabel.text = "Sort: " + sortName(S.sort) + " ▾";
+        sortLabel.style.visibility = listOn() ? "visible" : "collapse";
         filterLabel.text = currentFilter.length ? "Tags: " + currentFilter.map(function (f) { return f === "ordered" ? "L>R" : "Annotated"; }).join(" + ") + "  ×" : "";
         filterLabel.style.visibility = currentFilter.length && publicMode() ? "visible" : "collapse";
         statusLabel.style.visibility = publicMode() && statusLabel.text ? "visible" : "collapse";
@@ -688,6 +704,194 @@
         if (listOn() && pool) return pool.entries.filter(function (e) { return e.author !== "0" && (!known[e.key] || known[e.key].annotations === null) && apiAsked[e.author]; }).length;
         return rows().filter(function (r) { return worthReading(r) && (!CONFIG.previewChecks ? apiAsked[r.author] : true); }).length;
     }
+
+    // ------------------------------------------------------------------ settings (the ⚙ panel) and sorting
+    // Kept for the game session on the popup manager, and across sessions in the lookup page's browser
+    // storage (the game gives mods no files to write): "load" once, "save" after a change.
+    var DEFAULTS = {
+        hideBots: true, strictness: "normal", learnAccounts: true,
+        sort: "game",
+        hideOutdated: false, minGames: 0, minWinRate: 0, minFavs: 0, maxAgeDays: 0,
+        showRecord: true, showFavs: true, showTags: true,
+        autoLoad: true, pace: "normal"
+    };
+    var SORTS = [
+        ["game", "Game order", "As the game listed them, then the builds found while scrolling."],
+        ["favs", "Most favourited", "Builds with the most favourites first."],
+        ["trending", "Trending", "Most favourites this week first."],
+        ["updated", "Latest updated", "Most recently updated builds first."],
+        ["played", "Most played", "Authors with the most games on this hero first."],
+        ["wins", "Most wins", "Authors with the most wins on this hero first."],
+        ["winrate", "Best win rate", "Authors with the best win rate on this hero first (5+ games)."]
+    ];
+    function sortName(id) { for (var i = 0; i < SORTS.length; i++) if (SORTS[i][0] === id) return SORTS[i][1]; return SORTS[0][1]; }
+    function cleanSettings(v) {
+        var out = {};
+        Object.keys(DEFAULTS).forEach(function (k) { out[k] = v && typeof v[k] === typeof DEFAULTS[k] ? v[k] : DEFAULTS[k]; });
+        return out;
+    }
+    var S = cleanSettings(recall("bbf3_settings", null) || { hideBots: state.on !== false });
+    var settingsState = { loaded: false, tried: false, saveWanted: false, since: Date.now() };
+    // Automatic loading waits for the saved settings (they may turn it off), at most a few seconds.
+    function settingsReady() {
+        return settingsState.loaded || !CONFIG.authorStats || stats.state === "failed" || Date.now() - settingsState.since > 5000;
+    }
+    function applySettings() {
+        state.on = S.hideBots;
+        CONFIG.threshold = { relaxed: 4, normal: 3, strict: 2 }[S.strictness] || 3;
+        CONFIG.learnAuthors = S.learnAccounts;
+        R.burst = S.pace === "gentle" ? 2 : 3;
+        R.refillSeconds = S.pace === "gentle" ? 8 : 4;
+        version++;
+    }
+    function changeSetting(k, v) {
+        S[k] = v;
+        keep("bbf3_settings", S);
+        settingsState.saveWanted = true;
+        if (k === "hideBots") { setOn(v); }
+        applySettings();
+        drawSettings();
+        render();
+    }
+    // Why a build is hidden by the player's settings ("" = it is not). Data still loading never hides.
+    function hiddenBySettings(e) {
+        if (e.author === "0") return "";
+        if (S.hideOutdated && e.classes.indexOf("ObsoleteBuild") >= 0) return "outdated";
+        var k = known[e.key];
+        if (S.minFavs > 0 && k && typeof k.fav === "number" && k.fav < S.minFavs) return "favourites";
+        if (S.maxAgeDays > 0 && k && k.updated && now() - k.updated > S.maxAgeDays * 86400) return "not updated";
+        var d = stats.data[e.author];
+        if (S.minGames > 0 && d && d.m < S.minGames) return "author's games";
+        if (S.minWinRate > 0 && d && d.m >= 5 && d.w * 100 < S.minWinRate * d.m) return "author's win rate";
+        return "";
+    }
+    function sortValue(e) {
+        var k = known[e.key] || {}, d = stats.data[e.author];
+        switch (S.sort) {
+            case "favs": return typeof k.fav === "number" ? k.fav : -1;
+            case "trending": return typeof k.wfav === "number" ? k.wfav : -1;
+            case "updated": return k.updated || -1;
+            case "played": return d ? d.m : -1;
+            case "wins": return d ? d.w : -1;
+            case "winrate": return d && d.m >= 5 ? d.w / d.m : -1;
+        }
+        return 0;
+    }
+    function sortEntries(list) {
+        if (S.sort === "game") return list;
+        var withIndex = list.map(function (e, i) { return { e: e, i: i, v: sortValue(e) }; });
+        withIndex.sort(function (a, b) { return (b.v - a.v) || (a.i - b.i); });
+        return withIndex.map(function (x) { return x.e; });
+    }
+
+    // The panels: built once, in this layout's context (so our styles apply), over the build list.
+    var panelHost = main || selector, settingsPanel = null, sortPanel = null, openName = null;
+    function settingsOpen() { return openName === "settings"; }
+    function sortOpen() { return openName === "sort"; }
+    function openPanel(name) {
+        openName = name;
+        if (name === "settings" && !settingsPanel) buildSettings();
+        if (name === "sort" && !sortPanel) buildSort();
+        if (settingsPanel) settingsPanel.SetHasClass("BbfOpen", name === "settings");
+        if (sortPanel) sortPanel.SetHasClass("BbfOpen", name === "sort");
+        drawSettings();
+    }
+    var settingRows = [];
+    function newPanel(cls) {
+        var p = $.CreatePanelWithCurrentContext(panelHost);
+        p.AddClass(cls); p.AddClass("BbfControl");
+        return p;
+    }
+    function textLabel(parent, cls, text) { var l = $.CreatePanel("Label", parent, ""); l.AddClass(cls); l.text = text; return l; }
+    function section(parent, title) { textLabel(parent, "BbfSetSection", title); }
+    function settingRow(parent, title, desc) {
+        var row = $.CreatePanel("Panel", parent, "");
+        row.AddClass("BbfSetRow");
+        var line = $.CreatePanel("Panel", row, "");
+        line.AddClass("BbfSetLine");
+        textLabel(line, "BbfSetTitle", title);
+        var control = $.CreatePanel("Panel", line, "");
+        control.AddClass("BbfSetControl");
+        if (desc) textLabel(row, "BbfSetDesc", desc);
+        return control;
+    }
+    function toggleRow(parent, key, title, desc) {
+        var control = settingRow(parent, title, desc);
+        var pill = textLabel(control, "BbfPill", "");
+        pill.SetPanelEvent("onactivate", function () { changeSetting(key, !S[key]); });
+        settingRows.push(function () { pill.text = S[key] ? "ON" : "OFF"; pill.SetHasClass("BbfPillOn", !!S[key]); });
+    }
+    function choiceRow(parent, key, title, desc, options) {
+        var control = settingRow(parent, title, desc);
+        control.AddClass("BbfChoices");
+        options.forEach(function (o) {
+            var c = textLabel(control, "BbfChoice", o[1]);
+            c.SetPanelEvent("onactivate", function () { changeSetting(key, o[0]); });
+            if (o[2]) tooltip(c, o[2]);
+            settingRows.push(function () { c.SetHasClass("BbfChoiceOn", S[key] === o[0]); });
+        });
+    }
+    function buildSettings() {
+        settingsPanel = newPanel("BbfSettings");
+        var head = $.CreatePanel("Panel", settingsPanel, "");
+        head.AddClass("BbfSetHead");
+        textLabel(head, "BbfSetHeadTitle", "Bot Build Filter settings");
+        var close = textLabel(head, "BbfSetClose", "×");
+        close.SetPanelEvent("onactivate", function () { openPanel(null); });
+        var body = $.CreatePanel("Panel", settingsPanel, "");
+        body.AddClass("BbfSetBody");
+
+        section(body, "Bot builds");
+        toggleRow(body, "hideBots", "Hide bot builds", "Builds generated from win-rate data: they plug a website, copy the same description, or note items with \"+WR 3%\".");
+        choiceRow(body, "strictness", "How strict", "Strict catches more bots but may hide a few real builds.",
+            [["relaxed", "Relaxed", "Only obvious bots."], ["normal", "Normal"], ["strict", "Strict", "Hides anything that looks automated."]]);
+        toggleRow(body, "learnAccounts", "Remember bot accounts", "Once an account posts a bot build, hide its other builds too.");
+
+        section(body, "Hide builds that…");
+        toggleRow(body, "hideOutdated", "…are outdated", "Builds the game marks [OUTDATED]: items in them changed since they were made.");
+        choiceRow(body, "minGames", "…whose author played this hero less than", "Uses public match data (deadlock-api.com). 0 games often means they never played the hero.",
+            [[0, "Off"], [1, "1 game"], [5, "5"], [10, "10"], [25, "25"], [50, "50"]]);
+        choiceRow(body, "minWinRate", "…whose author's win rate is below", "Only judged once the author has 5 or more recorded games on this hero.",
+            [[0, "Off"], [40, "40%"], [45, "45%"], [50, "50%"], [55, "55%"]]);
+        choiceRow(body, "minFavs", "…have fewer favourites than", "",
+            [[0, "Off"], [10, "10"], [100, "100"], [1000, "1k"], [10000, "10k"]]);
+        choiceRow(body, "maxAgeDays", "…were not updated within", "",
+            [[0, "Off"], [7, "a week"], [30, "a month"], [90, "3 months"], [180, "6 months"], [365, "a year"]]);
+
+        section(body, "Sort");
+        choiceRow(body, "sort", "Order the list by", "Builds still loading their data go last.", SORTS.map(function (x) { return [x[0], x[1], x[2]]; }));
+
+        section(body, "Show on each build");
+        toggleRow(body, "showRecord", "The author's record", "Wins and losses on this hero, e.g. 30W 22L.");
+        toggleRow(body, "showFavs", "Favourites", "How many players favourited the build.");
+        toggleRow(body, "showTags", "Tags", "The build's tags, plus Annotated and L>R.");
+
+        section(body, "Loading");
+        toggleRow(body, "autoLoad", "Load more builds when scrolling", "Off: only when you click the bottom of the list.");
+        choiceRow(body, "pace", "Search pace", "Each search is one request to the game's servers.",
+            [["normal", "Normal", "Up to 15 searches a minute."], ["gentle", "Gentle", "Up to 7 a minute."]]);
+
+        var foot = $.CreatePanel("Panel", settingsPanel, "");
+        foot.AddClass("BbfSetFoot");
+        var reset = textLabel(foot, "BbfSetButton", "Reset to defaults");
+        reset.SetPanelEvent("onactivate", function () { Object.keys(DEFAULTS).forEach(function (k) { S[k] = DEFAULTS[k]; }); changeSetting("hideBots", true); });
+        var done = textLabel(foot, "BbfSetButton", "Done");
+        done.AddClass("BbfSetButtonMain");
+        done.SetPanelEvent("onactivate", function () { openPanel(null); });
+    }
+    function buildSort() {
+        sortPanel = newPanel("BbfSortMenu");
+        SORTS.forEach(function (x) {
+            var item = $.CreatePanel("Panel", sortPanel, "");
+            item.AddClass("BbfSortItem");
+            textLabel(item, "BbfSortName", x[1]);
+            textLabel(item, "BbfSortDesc", x[2]);
+            item.SetPanelEvent("onactivate", function () { changeSetting("sort", x[0]); openPanel(null); });
+            settingRows.push(function () { item.SetHasClass("BbfChoiceOn", S.sort === x[0]); });
+        });
+    }
+    function drawSettings() { settingRows.forEach(function (f) { f(); }); }
+    applySettings();
 
     // ------------------------------------------------------------------ the stock list, filtered in place (filter off, or the player's own search)
     function markRow(row, verdict) {
@@ -772,10 +976,12 @@
         'function fail(r,e){document.title="BBF1|"+r+"|err|"+((e&&e.message)||e)}' +
         'function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()})}' +
         'function run(){var P;try{P=JSON.parse(decodeURIComponent(location.hash.slice(1)))}catch(e){return}' +
+        'if(P.cmd==="load"){var v="";try{v=localStorage.getItem("bbf_settings")||""}catch(e){}send(P.r,v);return}' +
+        'if(P.cmd==="save"){try{localStorage.setItem("bbf_settings",JSON.stringify(P.settings))}catch(e){}send(P.r,"saved");return}' +
         'if(P.cmd==="builds"){var out=[],q=P.authors.slice(),busy=0;function one(){if(!q.length){if(!busy)send(P.r,JSON.stringify(out));return}var a=q.shift();busy++;' +
         'get(API+"builds?hero_id="+P.hero+"&author_id="+a+"&only_latest=true").then(function(l){for(var i=0;i<l.length;i++){var h=l[i].hero_build||{},d=h.details||{},c=d.mod_categories||[],notes=[],cats=[];' +
         'for(var j=0;j<c.length;j++){cats.push((c[j].name||"")+" "+(c[j].description||""));var m=c[j].mods||[];for(var k=0;k<m.length;k++)if(m[k].annotation)notes.push(String(m[k].annotation).slice(0,80))}' +
-        'out.push([String(h.author_account_id),String(h.name||""),h.hero_build_id|0,l[i].num_favorites|0,l[i].num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400)])}})' +
+        'out.push([String(h.author_account_id),String(h.name||""),h.hero_build_id|0,l[i].num_favorites|0,l[i].num_weekly_favorites|0,String(h.description||"").slice(0,400),notes.slice(0,30),cats.join("\\n").slice(0,400),h.last_updated_timestamp|0])}})' +
         '.catch(function(){out.push(["!",String(a)])}).then(function(){busy--;one()})}for(var w=0;w<6;w++)one();return}' +
         'if(P.cmd==="favs"){get(API+"builds?hero_id="+P.hero+"&only_latest=true&sort_by=favorites&sort_direction=desc&limit="+(P.limit|0||400)).then(function(a){' +
         'var o=[],min=-1;for(var i=0;i<a.length;i++){var b=a[i],h=b.hero_build||{},f=b.num_favorites|0;min=min<0?f:Math.min(min,f);o.push(h.author_account_id+":"+fnv(String(h.name||""))+":"+f+":"+(b.num_weekly_favorites|0))}' +
@@ -868,14 +1074,21 @@
     function finish(body) {
         var cmd = stats.cur;
         var recs = body ? body.split(",") : [];
-        if (cmd.cmd === "builds") {
+        if (cmd.cmd === "load") {
+            settingsState.loaded = true;
+            try {
+                if (body) { S = cleanSettings(JSON.parse(body)); keep("bbf3_settings", S); applySettings(); if (state.on !== S.hideBots) setOn(S.hideBots); drawSettings(); log("settings loaded"); }
+            } catch (e) { log("settings: saved copy unreadable"); }
+        } else if (cmd.cmd === "save") {
+            // nothing to do
+        } else if (cmd.cmd === "builds") {
             var got = 0, failed = {};
             JSON.parse(body || "[]").forEach(function (b) {
                 if (b[0] === "!") { failed[b[1]] = true; return; }
                 var key = keyOf(b[0], b[1]);
                 // The API's copy of the build stands in for a preview (unless a preview already read it).
                 if (!known[key] || known[key].src === "api" || known[key].annotations === null) {
-                    known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], src: "api" };
+                    known[key] = { author: b[0], desc: plain(b[5]), annotations: b[6] || [], cats: b[7] || "", id: b[2], fav: b[3], wfav: b[4], updated: b[8] || 0, src: "api" };
                     got++;
                 }
             });
@@ -921,7 +1134,9 @@
         if (stats.state === "off") startStats();
         if (stats.state === "waiting" && now() - stats.sentAt > SC.timeoutSeconds) statsFailed("no answer from deadlock-api.com");
         if (stats.state !== "ready" || now() < stats.nextAt) return;
-        // Build texts for builds we have nothing on, then authors' records.
+        // Saved settings first (once), a pending save, then build texts, then authors' records.
+        if (!settingsState.tried) { settingsState.tried = true; send({ cmd: "load" }); return; }
+        if (settingsState.saveWanted) { settingsState.saveWanted = false; send({ cmd: "save", settings: S }); return; }
         var need = buildsWanted();
         if (need.length) { send({ cmd: "builds", hero: stats.heroId, authors: need.slice(0, SC.buildsBatch) }); return; }
         if (statsAuthorsVersion !== version) {
@@ -977,8 +1192,8 @@
             }
             refs.rec = byClass(refs.box, "BbfRecord"); refs.fav = byClass(refs.box, "BbfFav");
         }
-        var d = author && author !== "0" ? stats.data[author] : null, fi = favInfo(author, name);
-        var sig = (d ? d.w + "/" + d.m : "-") + "|" + (fi ? (fi.below ? "<" + fi.below : fi.n + "/" + fi.w) : "-") + "|" + stats.heroName;
+        var d = S.showRecord && author && author !== "0" ? stats.data[author] : null, fi = S.showFavs ? favInfo(author, name) : null;
+        var sig = (d ? d.w + "/" + d.m : "-") + "|" + (fi ? (fi.below ? "<" + fi.below : fi.n + "/" + fi.w) : "-") + "|" + stats.heroName + "|" + S.showRecord + S.showFavs;
         if (refs.box.GetAttributeString("bbf_sig", "") === sig) return;
         refs.box.SetAttributeString("bbf_sig", sig);
         if (d) {
@@ -1024,6 +1239,7 @@
     function setOn(on) {
         state.on = on;
         keep("bbf2_state", state);
+        if (S.hideBots !== on) { S.hideBots = on; keep("bbf3_settings", S); settingsState.saveWanted = true; drawSettings(); }
         if (!on) { if (busy) pause("filter switched off"); restoreStock(); }
         apply(); render(); drawControl();
     }
@@ -1092,6 +1308,7 @@
     }
     // Our rows' tag chips are plain panels (BbfTagChip): an icon when the name is known, else the name.
     function drawTags(refs, tags, own) {
+        if (!S.showTags) { tags = []; own = null; }
         var list = tags.slice(0, 3).map(function (n) { return { name: n, icon: tagIcon(n), tip: n, own: false }; });
         // Three chips at most, like the game: the build's own tags first, ours in the slots left over.
         if (own) ["annotated", "ordered"].forEach(function (k) { if (own[k] && list.length < 3) list.push({ name: OWN_TAGS[k].name, icon: OWN_TAGS[k].icon, tip: OWN_TAGS[k].tip, own: true }); });
@@ -1132,14 +1349,19 @@
         return added.length;
     }
     // What the list shows: pool entries that are not (or no longer) bot builds, Valve's default builds last.
-    var shownCache = null, shownVersion = -1;
+    var shownCache = null, shownVersion = -1, hiddenBySettingsCount = 0;
     function shownEntries() {
         if (!pool) return [];
         if (shownCache && shownVersion === version) return shownCache;
         var result = verdicts(pool.entries);
-        var out = pool.entries.filter(function (e) { return !result[e.key].bot && passesFilter(currentFilter, e.key, e.author, e.name); });
+        hiddenBySettingsCount = 0;
+        var out = pool.entries.filter(function (e) {
+            if (result[e.key].bot || !passesFilter(currentFilter, e.key, e.author, e.name)) return false;
+            if (hiddenBySettings(e)) { hiddenBySettingsCount++; return false; }
+            return true;
+        });
         shownVersion = version;
-        return (shownCache = out.filter(function (e) { return e.author !== "0"; }).concat(out.filter(function (e) { return e.author === "0"; })));
+        return (shownCache = sortEntries(out.filter(function (e) { return e.author !== "0"; })).concat(out.filter(function (e) { return e.author === "0"; })));
     }
     function nextTerm() {
         var words = CONFIG.searchWords.concat(ITEM_NAMES);
@@ -1187,7 +1409,7 @@
                 ", L>R on " + checked.filter(function (e) { var t = ownTagsOf(e.key, e.author, e.name); return t && t.ordered; }).length);
         } catch (e) { log("verify: " + e); pause("an error while checking"); }
         finally { busy = false; progress = ""; render(); }
-        if (!paused && !(pool && pool.dry) && shownEntries().length < CONFIG.minRows) loadMore("fill");
+        if (!paused && !(pool && pool.dry) && shownEntries().length < CONFIG.minRows) fillWhenReady();
     }
     // One "load more": search until batchMinNew new builds were added (or batchMaxSearches searches).
     async function loadMore(why) {
@@ -1212,7 +1434,7 @@
                 render();
             }
             // A search can move the details pane: put back the build the player picked in our list.
-            if (selectedKey && detailsId() !== shownId) {
+            if (selectedKey && !paused && detailsId() !== shownId) {
                 var sel = pool.entries.filter(function (x) { return x.key === selectedKey; })[0];
                 var back = sel ? stockRowFor(sel) : null;
                 if (back) click(back.panel);
@@ -1228,7 +1450,12 @@
         // Keep filling a short list, unless a whole batch found nothing new (then scrolling asks for more).
         if (why === "fill" && added === 0) pool.dry = true;
         else if (added > 0) pool.dry = false;
-        if (!paused && !pool.exhausted && !pool.dry && listOn() && shownEntries().length < CONFIG.minRows) $.Schedule(0.1, function () { if (alive) loadMore("fill"); });
+        if (!paused && S.autoLoad && !pool.exhausted && !pool.dry && listOn() && shownEntries().length < CONFIG.minRows) $.Schedule(0.1, function () { if (alive) loadMore("fill"); });
+    }
+    function fillWhenReady() {
+        if (!alive) return;
+        if (!settingsReady()) { $.Schedule(0.25, fillWhenReady); return; }
+        if (S.autoLoad && !paused && listOn() && pool && !pool.dry && shownEntries().length < CONFIG.minRows) loadMore("fill");
     }
 
     // ------------------------------------------------------------------ picking builds in our list
@@ -1243,11 +1470,12 @@
         if (busy) { pause(); await waitFor(function () { return !busy; }, 12); }
         stopWork = false;   // background work stays paused; this search is the player's own
         var row = stockRowFor(e), id = idOf(e);
-        if (!row && id) {
+        // Not in the stock results: search for it, by id when known, else by its name.
+        if (!row) {
             busy = true; userLoading = true;
             progress = "Loading " + e.name;
             drawControl();
-            try { await search(id, true); } finally { busy = false; userLoading = false; progress = ""; }
+            try { await search(id || e.name, true); } finally { busy = false; userLoading = false; progress = ""; }
             row = stockRowFor(e);
         }
         if (seq !== pickSeq) return null;
@@ -1366,7 +1594,8 @@
         else if (rateNote) text = "Waiting: " + rateNote;
         else if (pool.exhausted) text = "That's every build the searches found";
         else if (paused) text = "Paused. Click to load more builds";
-        else text = "Scroll down or click to load more builds";
+        else text = S.autoLoad ? "Scroll down or click to load more builds" : "Click to load more builds";
+        if (hiddenBySettingsCount) text += "  ·  " + hiddenBySettingsCount + " hidden by your settings (⚙)";
         moreLabel.text = text;
         moreRow.SetHasClass("BbfLoading", busy);
     }
@@ -1402,7 +1631,9 @@
                     // The hero is told by Valve's default build row; without one the list still works, uncached.
                     if (!wasListOn && (heroKey || ticks > 8)) { wasListOn = true; $.Schedule(0.05, function () { if (alive) verifyList(); }); }
                     else if (wasListOn && !pool) verifyList();
-                    else if (wasListOn && pool && !paused && !pool.exhausted && nearBottom()) loadMore("scrolled");
+                    else if (wasListOn && pool && !paused && !pool.exhausted && S.autoLoad && settingsReady() && nearBottom()) loadMore("scrolled");
+                    // Builds recognised as bots once their texts arrived can leave the list short: top it up.
+                    else if (wasListOn && pool && !paused && !pool.exhausted && !pool.dry && S.autoLoad && settingsReady() && shownEntries().length < CONFIG.minRows) loadMore("fill");
                 } else {
                     wasListOn = false;
                     // My Builds filters the current results: give it the normal list back.
